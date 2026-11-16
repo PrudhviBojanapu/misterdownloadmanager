@@ -56,6 +56,7 @@ function fakeApi({
   pageLinks = ["https://x/1.zip", "https://x/2.zip"],
   // tabs.query's answer for the active tab of the window last used (#607).
   activeTab,
+  cookieList,
 }) {
   const raw = [];
   // Objects made inside the sandbox have its prototypes: compare plain copies.
@@ -114,7 +115,9 @@ function fakeApi({
       getAll: async (q) => {
         calls.push(["cookies", q]);
         // As Chrome gives one: its other fields aren't sent.
-        return [{ name: "sid", value: "1", domain: ".tube.test", hostOnly: false, path: "/", secure: true, httpOnly: true, sameSite: "lax", session: false, expirationDate: 1893456000.5, storeId: "0" }];
+        return cookieList
+          ? cookieList(q)
+          : [{ name: "sid", value: "1", domain: ".tube.test", hostOnly: false, path: "/", secure: true, httpOnly: true, sameSite: "lax", session: false, expirationDate: 1893456000.5, storeId: "0" }];
       },
     },
     permissions: {
@@ -309,10 +312,60 @@ const ok = (what) => {
   console.log(`ok - ${what}`);
 };
 
+// GitHub updates arrive through the signed app package, never as remotely fetched code.
+{
+  for (const [disk, installType, reloads] of [
+    ["0.2.6", "development", 1],
+    ["0.2.5.1", "development", 1],
+    ["0.2.5", "development", 0],
+    ["0.2.4", "development", 0],
+    ["invalid", "development", 0],
+    ["0.2.6", "normal", 0],
+  ]) {
+    const { api, calls } = fakeApi({});
+    api.management = { getSelf: async () => ({ installType }) };
+    api.runtime.reload = () => calls.push(["reload"]);
+    const fetched = [];
+    const ctx = load(api, false, {
+      fetch: async (url, options) => {
+        fetched.push([url, options.cache]);
+        return { ok: true, json: async () => ({ version: disk }) };
+      },
+      setTimeout: (callback, ms) => setTimeout(callback, ms === 10000 ? 0 : ms),
+    });
+    await ctx.checkBundledUpdate();
+    assert.equal(calls.filter(([kind]) => kind === "reload").length, reloads, `${disk}, ${installType}`);
+    assert.ok(fetched.every(([url, cache]) => url === api.runtime.getURL("manifest.json") && cache === "no-store"));
+  }
+  const { api, calls } = fakeApi({});
+  api.management = { getSelf: async () => ({ installType: "development" }) };
+  api.runtime.reload = () => calls.push(["reload"]);
+  let reads = 0;
+  const ctx = load(api, false, {
+    fetch: async () => ({ ok: true, json: async () => ({ version: ++reads === 1 ? "0.2.6" : "0.2.7" }) }),
+    setTimeout: (callback, ms) => setTimeout(callback, ms === 10000 ? 0 : ms),
+  });
+  await ctx.checkBundledUpdate();
+  assert.equal(calls.filter(([kind]) => kind === "reload").length, 0, "an installation still changing is not reloaded");
+  ok("bundled updates reload only a newer, stable, local unpacked extension");
+}
+
 // Firefox: a .zip in a container is taken over with that container's cookies and the browser's
 // name, size and type; every message says which browser and version it comes from.
 {
-  const { api, calls, listeners } = fakeApi({ firefox: true });
+  const { api, calls, listeners } = fakeApi({
+    firefox: true,
+    cookieList: ({ url }) => [{
+      name: "sid",
+      value: "1",
+      domain: new URL(url).hostname,
+      hostOnly: true,
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      expirationDate: 1893456000.5,
+    }],
+  });
   load(api, true);
   listeners.created({
     id: 7,
@@ -334,7 +387,15 @@ const ok = (what) => {
     ["https://x/a.zip", "https://page/", "sid=1", "a.zip", 2048, "application/zip", "UA", "0.2.5"],
   );
   assert.deepEqual(m.brands, ["Chromium", "Brave"]);
-  assert.equal(m.cookieJar, undefined, "a file's download: the header the app sends");
+  assert.deepEqual(m.cookieJar, [{
+    name: "sid",
+    value: "1",
+    domain: "x",
+    hostOnly: true,
+    path: "/",
+    secure: true,
+    expirationDate: 1893456000.5,
+  }]);
   assert.deepEqual(steps(calls), ["pause", "cancel", "erase"]);
   ok("Firefox: taken with its container's cookies, size and type");
 }
@@ -378,7 +439,17 @@ const ok = (what) => {
 // Chrome: incognito downloads use the incognito store; the address asked for goes as the
 // download's (an expired signed link is renewed from it), the redirect's end beside it.
 {
-  const { api, calls, listeners } = fakeApi({ firefox: false });
+  const { api, calls, listeners } = fakeApi({
+    firefox: false,
+    cookieList: ({ url }) => [{
+      name: "sid",
+      value: "1",
+      domain: new URL(url).hostname,
+      hostOnly: true,
+      path: "/",
+      secure: true,
+    }],
+  });
   load(api, false);
   let suggested = false;
   listeners.determining(
@@ -387,10 +458,17 @@ const ok = (what) => {
   );
   await settle();
   assert.ok(!suggested, "a download the app took is never named: Chrome wrote none of it");
-  const cookies = calls.find((c) => c[0] === "cookies");
-  assert.deepEqual(cookies[1], { url: "https://x/redirect", storeId: "1" });
+  const cookieQueries = calls.filter((c) => c[0] === "cookies").map((c) => c[1]);
+  assert.deepEqual(cookieQueries, [
+    { url: "https://x/redirect", storeId: "1" },
+    { url: "https://cdn/x.msi", storeId: "1" },
+  ]);
   const [m] = natives(calls);
   assert.deepEqual([m.url, m.finalUrl, m.private], ["https://x/redirect", "https://cdn/x.msi", true]);
+  assert.deepEqual(m.cookieJar.map(({ name, domain, hostOnly }) => [name, domain, hostOnly]), [
+    ["sid", "x", true],
+    ["sid", "cdn", true],
+  ]);
   assert.deepEqual(steps(calls), ["cancel", "erase"], "held at its name, not paused and resumed");
   ok("Chrome: taken at its name, incognito cookies, both addresses");
 }

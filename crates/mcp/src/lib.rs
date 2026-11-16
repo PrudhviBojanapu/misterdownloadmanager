@@ -27,12 +27,13 @@ const API_OFF: &str = "Mister Download Manager's automation API is off. Ask the 
 const INSTRUCTIONS: &str = "Controls Mister Download Manager, the download manager running on \
     this computer. list_downloads shows its downloads with their ids (and optional id, status, \
     category, queue, or search filtering); pause_downloads, resume_downloads and \
-    remove_downloads act on those ids; add_download adds an address (http, https, ftp, ftps \
+    remove_downloads act on those ids; add_download adds an address (http, https \
     or a magnet link); start_queue starts a download queue (the main queue by default, or \
     by name); stop_queue stops a download queue (the main queue by default, or by name). \
-    Listing and acting on downloads, stopping a queue, and starting a named queue need \
-    the app's automation API, which the user turns on with `misterdownloadmanager-cli api on`. \
-    Sizes, free space and speeds are in bytes and bytes per second.";
+    control exposes typed, non-interactive properties, settings (credentials redacted), \
+    move/rename/retry, categories, basic queues and TorBox accounts. \
+    Listing and acting on downloads needs the app's automation API, which the user turns on \
+    with `misterdownloadmanager-cli api on`. Sizes, free space and speeds are in bytes and bytes per second.";
 
 #[derive(Deserialize, JsonSchema, Default)]
 pub struct ListArgs {
@@ -53,8 +54,7 @@ pub struct ListArgs {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct AddArgs {
-    /// The address: http, https, ftp or ftps, or a magnet link (the app then asks the user
-    /// which of the torrent's files to take).
+    /// The address: HTTP, HTTPS, or a magnet link (all files, without a dialog).
     pub url: String,
     /// The folder to save it in (default: the app's folder for that kind of file).
     pub folder: Option<String>,
@@ -82,6 +82,18 @@ pub struct AddArgs {
     /// true: only add it to the download queue, without starting it now.
     #[serde(default)]
     pub later: bool,
+    /// Skip returns the existing id by default; add numbers a new destination;
+    /// replace stages an HTTP-file replacement, swapping only on success; resume starts an existing stopped entry.
+    #[serde(default)]
+    pub duplicate: mdm_ipc::automation::DuplicatePolicy,
+    /// true: never show Download complete for this download (other downloads keep Options').
+    #[serde(default)]
+    pub no_complete_dialog: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ControlArgs {
+    pub operation: mdm_ipc::automation::Operation,
 }
 
 #[derive(Deserialize, JsonSchema, Default)]
@@ -123,10 +135,16 @@ impl Server {
     /// blocks (up to a few seconds), so it runs off the async threads.
     async fn call(&self, cmd: Command) -> Result<String, String> {
         let ask = self.ask.clone();
+        let typed = cmd.operation.is_some();
         let answer = tokio::task::spawn_blocking(move || ask(&cmd))
             .await
             .map_err(|e| e.to_string())?;
-        explain(answer)
+        let answer = explain(answer)?;
+        if typed && !serde_json::from_str::<serde_json::Value>(&answer).is_ok_and(|v| v.is_object())
+        {
+            return Err("The app did not return a typed operation result; update/restart MDM before retrying.".into());
+        }
+        Ok(answer)
     }
 
     async fn act(&self, action: &str, ids: Vec<u64>) -> Result<String, String> {
@@ -144,6 +162,30 @@ impl Server {
 
 #[tool_router]
 impl Server {
+    #[tool(
+        description = "Typed local automation for retained MDM features: inspect/edit properties; \
+          retry, move and rename downloads; read/edit credential-redacted settings; manage \
+          categories, basic queues and queue membership/order; manage TorBox accounts; \
+          pair/revoke remote devices; discover videos/playlists/torrents; add videos, galleries, \
+          playlists and selected torrent files to the GUI list; recheck/reannounce torrents, \
+          change trackers, file selection and piece order. Poll lookup jobs until ready. \
+          Write credentials only when explicitly requested. Replace/delete operations are \
+          destructive. Moves and finished renames are asynchronous: inspect properties and \
+          status afterward. Scheduler, quotas, RSS, FTP, extraction and themes are not supported.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn control(&self, Parameters(args): Parameters<ControlArgs>) -> Result<String, String> {
+        self.call(Command {
+            operation: Some(args.operation),
+            ..Default::default()
+        })
+        .await
+    }
+
     #[tool(
         description = "Lists Mister Download Manager's downloads, newest first: id, file, url, \
                        path, status (Queued, Downloading, Stopped, Complete or Error), category, \
@@ -168,11 +210,12 @@ impl Server {
 
     #[tool(
         description = "Adds a download to Mister Download Manager and starts it (or only queues \
-                       it, with later). If the list already has the address, the app asks the \
-                       user what to do.",
+                       it, with later). Never opens dialogs. By default an existing URL is \
+                       skipped and its id returned; choose duplicate policy explicitly. \
+                       The replace policy preserves the existing HTTP file until the new copy succeeds.",
         annotations(
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             open_world_hint = true
         )
     )]
@@ -181,39 +224,32 @@ impl Server {
         if !addable(&url) {
             return Err(format!(
                 "{url:?} isn't an address Mister Download Manager downloads: it takes http, \
-                 https, ftp and ftps addresses and magnet links."
+                 https addresses and magnet links."
             ));
         }
         let queue = args.queue.filter(|q| !q.trim().is_empty());
         let category = args.category.filter(|c| !c.trim().is_empty());
         self.call(Command {
-            url: Some(url.clone()),
-            dir: args.folder.filter(|d| !d.trim().is_empty()),
-            name: args.file_name.filter(|n| !n.trim().is_empty()),
-            category: category.clone(),
-            queue: queue.clone(),
-            checksum: args.checksum.filter(|c| !c.trim().is_empty()),
-            referer: args.referer.filter(|r| !r.trim().is_empty()),
-            user_agent: args.user_agent.filter(|u| !u.trim().is_empty()),
-            cookies: args.cookie.filter(|c| !c.trim().is_empty()),
-            later: args.later,
-            private: args.private,
-            silent: true,
+            operation: Some(mdm_ipc::automation::Operation::Add {
+                download: mdm_ipc::automation::AddDownload {
+                    url,
+                    folder: args.folder.filter(|d| !d.trim().is_empty()),
+                    file_name: args.file_name.filter(|n| !n.trim().is_empty()),
+                    later: args.later,
+                    duplicate: args.duplicate,
+                    category,
+                    queue,
+                    checksum: args.checksum.filter(|c| !c.trim().is_empty()),
+                    referer: args.referer.filter(|r| !r.trim().is_empty()),
+                    user_agent: args.user_agent.filter(|u| !u.trim().is_empty()),
+                    cookie: args.cookie.filter(|c| !c.trim().is_empty()),
+                    private: args.private,
+                    no_complete_dialog: args.no_complete_dialog,
+                },
+            }),
             ..Default::default()
         })
-        .await?;
-        Ok(if args.later {
-            match queue {
-                Some(q) => {
-                    format!("Added {url} to queue \"{q}\" (not started). list_downloads shows it.")
-                }
-                None => {
-                    format!("Added {url} to the main queue (not started). list_downloads shows it.")
-                }
-            }
-        } else {
-            format!("Added {url} and started it. list_downloads shows its progress.")
-        })
+        .await
     }
 
     #[tool(
@@ -387,8 +423,7 @@ fn addable(url: &str) -> bool {
     {
         return true;
     }
-    url::Url::parse(url)
-        .is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "ftp" | "ftps") && u.has_host())
+    url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host())
 }
 
 /// The list answer cut to what was asked for, newest (highest id) first, with how many match.
@@ -426,6 +461,17 @@ fn filter_list(answer: &str, args: &ListArgs) -> Result<String, String> {
 mod tests {
     use super::*;
     use serde_json::Value;
+    #[tokio::test]
+    async fn old_apps_cannot_silently_acknowledge_unimplemented_operations() {
+        let server = Server::new(Arc::new(|_| Ok("ok".into())));
+        let result = server
+            .call(Command {
+                operation: Some(mdm_ipc::automation::Operation::Settings {}),
+                ..Default::default()
+            })
+            .await;
+        assert!(result.unwrap_err().contains("typed operation result"));
+    }
 
     const LIST: &str = r#"{"downloads":[
         {"id":1,"file":"ubuntu.iso","url":"https://releases.ubuntu.com/ubuntu.iso","status":"Complete","path":"/downloads/f","size":100,"downloaded":50,"speed":0,"added":null,"category":"Programs"},
@@ -536,7 +582,7 @@ mod tests {
     #[test]
     fn adds_only_what_the_app_downloads() {
         assert!(addable("https://example.com/a.zip"));
-        assert!(addable("ftp://example.com/a.zip"));
+        assert!(!addable("ftp://example.com/a.zip"));
         assert!(addable("MAGNET:?xt=urn:btih:abc"));
         assert!(!addable("file:///etc/passwd"));
         assert!(!addable("javascript:alert(1)"));

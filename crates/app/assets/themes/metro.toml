@@ -5,7 +5,7 @@
 
 name = "Metro"
 icon-set = "metro"
-icons = "mono"
+icons = "color"
 
 [controls]
 field-focus = "border"

@@ -26,6 +26,7 @@ env:
 
 jobs:
   geo:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     # Where a download's server is (#140): this month's IP-to-country table (DB-IP's IP to Country
     # Lite, CC BY 4.0) for every build. A failed download keeps the committed one, with a warning.
     runs-on: ubuntu-latest
@@ -44,6 +45,7 @@ jobs:
           retention-days: 7
 
   windows:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     # One build per processor, each on a runner of its own: x64 and 32-bit on GitHub's x64 Windows
     # (32-bit programs run there too, for the tests), ARM64 on its Windows on ARM.
     name: windows-${{ matrix.arch }}
@@ -186,6 +188,7 @@ jobs:
           path: target/dist/*
 
   extension:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     # Every browser's extension as its own download: Chrome, Edge, Brave, Opera and Vivaldi
     # (unzip, then load the folder unpacked) and Firefox (.xpi).
     runs-on: ubuntu-latest
@@ -280,6 +283,7 @@ jobs:
           path: target/dist/*
 
   linux:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     # The oldest supported Ubuntu: the programs run on its glibc (2.35) and newer. x86-64 and
     # ARM64, each on a runner of its own.
     name: linux-${{ matrix.arch }}
@@ -361,6 +365,7 @@ jobs:
           path: target/dist/*
 
   macos:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     needs: geo
     runs-on: macos-latest
     steps:
@@ -406,6 +411,7 @@ jobs:
     # x64 Windows is checked below by its files: the Windows job's result says failure when any
     # processor's build failed, and only x64's must be there.
     if: >-
+      github.repository == 'anefzaoui/misterdownloadmanager' &&
       always() && startsWith(github.ref, 'refs/tags/') && needs.windows.result != 'cancelled' &&
       needs.extension.result == 'success'
     needs: [windows, extension, linux, macos]

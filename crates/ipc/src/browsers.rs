@@ -662,28 +662,12 @@ pub fn manifest_program(manifest: &Path) -> Option<PathBuf> {
 /// The native host's name, which its manifests and registry entries carry.
 pub const HOST_NAME: &str = "com.misterdownloadmanager.host";
 
-/// Windows: the registry keys the browsers look the native host up under (`<key>\HOST_NAME`'s
-/// default value: the manifest's path), under HKCU for one user or HKLM for everyone, each with
-/// the family whose manifest it names. Chromium-branded builds (Chromium, Helium, Thorium, Brave
-/// and Brave Origin with every channel) read Chromium's first, then Chrome's, as most other forks
-/// do (Chromium's `launch_context_win.cc`); Brave's own key is kept for builds that read it.
-/// Firefox and its forks read Mozilla's.
-pub const WINDOWS_HOST_KEYS: [(&str, Family); 5] = [
-    (
-        r"Software\Google\Chrome\NativeMessagingHosts",
-        Family::Chromium,
-    ),
-    (r"Software\Chromium\NativeMessagingHosts", Family::Chromium),
-    (
-        r"Software\Microsoft\Edge\NativeMessagingHosts",
-        Family::Chromium,
-    ),
-    (
-        r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts",
-        Family::Chromium,
-    ),
-    (r"Software\Mozilla\NativeMessagingHosts", Family::Gecko),
-];
+/// This Windows fork registers and repairs only Microsoft's Edge native host entry.
+/// The default value names its manifest, under HKCU for one user or HKLM for everyone.
+pub const WINDOWS_HOST_KEYS: [(&str, Family); 1] = [(
+    r"Software\Microsoft\Edge\NativeMessagingHosts",
+    Family::Chromium,
+)];
 
 /// Windows: the manifest a registry entry's value names (quotes and spaces around it dropped).
 pub fn registered_manifest(value: &str) -> PathBuf {

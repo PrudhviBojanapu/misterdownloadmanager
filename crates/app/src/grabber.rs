@@ -6,7 +6,7 @@
 //! looked up for its name and size, Check all / Uncheck all, "Hide web pages", OK adds the
 //! ticked ones to the queue); the packages come from JDownloader's link grabber: a split
 //! archive's volumes are one package, the other links of one page another, the rest "Various
-//! files". A package has its folder, an archive password and "Extract when done".
+//! files". A package keeps its folder and imported metadata.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -75,7 +75,7 @@ impl Origin {
     /// Where the link `url` named `name` (found on page `referer`) belongs.
     pub fn of(url: &Url, name: &str, referer: Option<&str>) -> Origin {
         let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-        if let Some(v) = mdm_extract::volume_key(name) {
+        if let Some(v) = crate::archive_names::volume_key(name) {
             return Origin::Volumes { host, base: v.base };
         }
         if let Some(page) = referer.and_then(|r| Url::parse(r).ok())
@@ -130,9 +130,6 @@ pub struct Package {
     /// Typed by the user: no longer follows the files' category.
     folder_set: bool,
     pub password: String,
-    pub extract: bool,
-    extract_set: bool,
-    pub delete: bool,
     open: bool,
 }
 
@@ -210,8 +207,6 @@ pub struct Picked {
     pub name: String,
     pub folder: PathBuf,
     pub password: Option<String>,
-    pub extract: bool,
-    pub delete: bool,
     /// Each link, the name to save it under (looked up, else the address's), and its size.
     pub links: Vec<(Imported, String, Option<u64>)>,
 }
@@ -247,8 +242,6 @@ pub struct Grabber {
     /// The default folders (Options → Save to), as category_folder reads them.
     downloads: PathBuf,
     dirs: Vec<(String, String)>,
-    /// Extract when done, and Delete archives after extracting, for a new package (Options).
-    delete_default: bool,
     /// The package the box under the list edits.
     current: usize,
     /// One of that box's text boxes had the keys (last frame).
@@ -261,12 +254,7 @@ pub struct Grabber {
 }
 
 impl Grabber {
-    pub fn new(
-        downloads: PathBuf,
-        dirs: Vec<(String, String)>,
-        hide_pages: bool,
-        delete_default: bool,
-    ) -> Self {
+    pub fn new(downloads: PathBuf, dirs: Vec<(String, String)>, hide_pages: bool) -> Self {
         Grabber {
             packages: Vec::new(),
             links: Vec::new(),
@@ -275,7 +263,6 @@ impl Grabber {
             hide_pages,
             downloads,
             dirs,
-            delete_default,
             current: 0,
             editing: false,
             origins: Default::default(),
@@ -398,9 +385,6 @@ impl Grabber {
             folder: String::new(),
             folder_set: false,
             password: String::new(),
-            extract: false,
-            extract_set: false,
-            delete: self.delete_default,
             open: true,
         });
         self.packages.len() - 1
@@ -417,7 +401,6 @@ impl Grabber {
         struct Seen {
             first: Option<Category>,
             one: bool,
-            archives: bool,
         }
         let mut seen: Vec<Option<Seen>> = vec![None; self.packages.len()];
         for &k in ks {
@@ -425,7 +408,6 @@ impl Grabber {
                 *s = Some(Seen {
                     first: None,
                     one: true,
-                    archives: false,
                 });
             }
         }
@@ -437,7 +419,6 @@ impl Grabber {
                 None => s.first = Some(l.category()),
                 Some(c) => s.one &= c == l.category(),
             }
-            s.archives = s.archives || (!l.magnet && crate::extractq::archive_name(&l.name));
         }
         for (k, s) in seen.into_iter().enumerate() {
             let Some(s) = s else { continue };
@@ -452,9 +433,6 @@ impl Grabber {
             let p = &mut self.packages[k];
             if !p.folder_set {
                 p.folder = folder;
-            }
-            if !p.extract_set {
-                p.extract = s.archives;
             }
         }
     }
@@ -689,8 +667,6 @@ impl Grabber {
                     name: p.name.clone(),
                     folder: PathBuf::from(p.folder.trim()),
                     password: Some(p.password.clone()).filter(|s| !s.is_empty()),
-                    extract: p.extract,
-                    delete: p.extract && p.delete,
                     links,
                 })
             })
@@ -1128,7 +1104,7 @@ impl Grabber {
         }
     }
 
-    /// The selected package's name, folder, password and what happens to its archives.
+    /// The selected package's name and download folder.
     fn package_box(&mut self, ui: &mut Ui, o: Pos2) {
         let p = ui.painter().clone();
         // A package has a row when some of its links show.
@@ -1147,23 +1123,11 @@ impl Grabber {
             Some((o.x + 18.0, o.x + 22.0 + cw)),
         );
         text(&p, o.x + 20.0, o.y + 334.0, caption, LIGHT_TEXT());
-        let mut blank = (String::new(), String::new(), String::new(), false, false);
+        let mut blank = (String::new(), String::new());
         let pk = self.packages.get_mut(self.current).filter(|_| enabled);
-        let (name, folder, password, extract, delete) = match pk {
-            Some(pk) => (
-                &mut pk.name,
-                &mut pk.folder,
-                &mut pk.password,
-                &mut pk.extract,
-                &mut pk.delete,
-            ),
-            None => (
-                &mut blank.0,
-                &mut blank.1,
-                &mut blank.2,
-                &mut blank.3,
-                &mut blank.4,
-            ),
+        let (name, folder) = match pk {
+            Some(pk) => (&mut pk.name, &mut pk.folder),
+            None => (&mut blank.0, &mut blank.1),
         };
         let ink = if enabled {
             LIGHT_TEXT()
@@ -1175,8 +1139,6 @@ impl Grabber {
         let name_label = crate::i18n::t("Name:");
         // i18n: Link grabber: the folder the package's files go to (a label before its box)
         let folder_label = crate::i18n::t("Save to:");
-        // i18n: Link grabber: the package's archives' password (a label before its box)
-        let pw_label = crate::i18n::t("Password:");
         let wide = |s: &str| winui::text_width(&p, s);
         let bx = (21.0 + wide(name_label).max(wide(folder_label)) + 8.0).clamp(80.0, 160.0);
         let label = |ui: &Ui, x: f32, y: f32, s: &str, right: f32| {
@@ -1193,25 +1155,7 @@ impl Grabber {
         };
         // Row 1: the name, then the password.
         label(ui, 21.0, 360.0, name_label, bx - 4.0);
-        let pw_x = 340.0;
-        let pbx = (pw_x + wide(pw_label) + 8.0).min(470.0);
-        let named = winui::edit_light(
-            ui,
-            r(o, bx, 345.0, pw_x - 12.0 - bx, 23.0),
-            name,
-            enabled,
-            false,
-        );
-        label(ui, pw_x, 360.0, pw_label, pbx - 4.0);
-        let pw = winui::password_light(ui, r(o, pbx, 345.0, 621.0 - pbx, 23.0), password, enabled);
-        // i18n: what a screen reader calls Link grabber's password box
-        let pw_name = crate::i18n::t("Archive password");
-        ui.ctx().accesskit_node_builder(pw.id, |n| {
-            n.set_label(pw_name);
-            // UI Automation's id: tools tell the one password box apart by it (its name is
-            // not read out to them).
-            n.set_author_id("grabber-password");
-        });
+        let named = winui::edit_light(ui, r(o, bx, 345.0, 621.0 - bx, 23.0), name, enabled, false);
         // Row 2: the folder, and Browse.
         label(ui, 21.0, 391.0, folder_label, bx - 4.0);
         // i18n: verb: choose a folder
@@ -1260,26 +1204,10 @@ impl Grabber {
             *folder = dir.display().to_string();
             chose = true;
         }
-        self.editing = named.has_focus() || typed.has_focus() || pw.has_focus();
-        // Row 3: what becomes of its archives.
-        let was = *extract;
-        // i18n: Link grabber check box: extract the package's archives once they are downloaded
-        let extract_label = crate::i18n::mark("Extract when done");
-        winui::checkbox_light(ui, o + vec2(21.0, 411.0), extract, extract_label, enabled);
-        let extract_now = *extract;
-        let next = 21.0 + 18.0 + wide(crate::i18n::t(extract_label)) + 24.0;
-        // i18n: Link grabber check box: after extracting, the archives go to the Recycle Bin
-        winui::checkbox_light(
-            ui,
-            o + vec2(next, 411.0),
-            delete,
-            "Delete archives after extracting",
-            enabled && extract_now,
-        );
+        self.editing = named.has_focus() || typed.has_focus();
         if enabled {
             let pk = &mut self.packages[self.current];
             pk.folder_set |= typed.changed() || chose;
-            pk.extract_set |= was != extract_now;
         }
     }
 }
@@ -1380,7 +1308,7 @@ mod tests {
     }
 
     fn grabber() -> Grabber {
-        Grabber::new(PathBuf::from("D:\\dl"), Vec::new(), true, false)
+        Grabber::new(PathBuf::from("D:\\dl"), Vec::new(), true)
     }
 
     #[test]
@@ -1416,7 +1344,6 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![("Holiday", "secret", 2), ("Notes", "", 1)]);
-        assert!(g.packages[0].extract);
         // Sent by a page: none is looked up; a link the user brought is.
         assert!(g.to_check().is_empty());
         g.add(
@@ -1454,7 +1381,6 @@ mod tests {
         assert_eq!(g.links.len(), 20_000);
         // Settled as before: one package of archives, to extract.
         assert_eq!(g.packages.len(), 1);
-        assert!(g.packages[0].extract);
     }
 
     #[test]
@@ -1500,9 +1426,6 @@ mod tests {
                 ("Already in the list", 1),
             ]
         );
-        assert!(g.packages[0].extract, "a package of archives is extracted");
-        assert!(!g.packages[1].extract);
-        assert!(g.packages[3].extract, "Various holds two zips");
         let known = g.links.iter().find(|l| l.known).unwrap();
         assert!(!known.on);
         // The ticked links, each package to its folder.
@@ -1537,7 +1460,6 @@ mod tests {
         // The page's package (a program and a document): no folder, each to its category's.
         let page = picked.iter().find(|p| p.name == "example.org/get").unwrap();
         assert_eq!(page.folder, PathBuf::new());
-        assert!(!page.extract);
         // One kind of file: its category's folder.
         let various = picked.iter().find(|p| p.links[0].1 == "song.mp3").unwrap();
         assert_ne!(various.folder, PathBuf::new());
@@ -1832,7 +1754,6 @@ mod tests {
             let rows: Vec<Row> = mine.iter().map(|&i| Row::Link(i)).collect();
             assert_eq!(view.rows[at + 1..at + 1 + rows.len()], rows[..]);
         }
-        assert!(g.packages[0].extract, "an archive's volumes are extracted");
     }
 
     /// The links' categories are worked out as they come and when their names change; a
@@ -1864,7 +1785,6 @@ mod tests {
         g.take_answers();
         assert_eq!(g.links[1].category(), Category::Compressed);
         assert_eq!(g.packages[0].folder, "");
-        assert!(g.packages[0].extract);
         // As each name's category, from scratch.
         for l in &g.links {
             assert_eq!(l.category(), Category::of(&l.name));

@@ -242,10 +242,6 @@ pub struct Settings {
     /// Sealed on disk like Sites Logins' passwords (`sealed`); a plain one from before still reads.
     #[serde(with = "sealed")]
     pub proxy_pass: String,
-    /// Options → Archives → Archive passwords (#37): tried in this order on an encrypted archive
-    /// before its password is asked, one a line. Kept in the keychain as the other passwords.
-    #[serde(with = "sealed")]
-    pub archive_passwords: String,
     pub proxy_http: bool,
     pub proxy_https: bool,
     pub proxy_ftp: bool,
@@ -341,10 +337,9 @@ pub struct Settings {
     pub torrent_stop_ratio: u32,
     pub torrent_stop_minutes_on: bool,
     pub torrent_stop_minutes: u32,
-    /// Help: look for a newer release once a week (D-020; its switch is in Check for updates:
-    /// Options → General has no free row in IDM's layout).
+    /// Check the fork at startup/daily and install signed updates when idle.
     pub update_check: bool,
-    /// When the weekly check last ran (Unix seconds; 0: never).
+    /// When the automatic check last ran (Unix seconds; 0: never).
     pub update_checked: i64,
     /// The user's categories (D-021), after IDM's and Torrents.
     pub custom_categories: Vec<crate::model::CustomCategory>,
@@ -395,32 +390,33 @@ pub struct Settings {
 
 /// Options → File types defaults (IDM 6.42), shared with the browser host (mdm_ipc::capture).
 pub use mdm_ipc::capture::{DEFAULT_AUTO_TYPES, DEFAULT_EXCLUDED_SITES};
-/// The browsers IDM 6.42 lists, plus Firefox's forks MDM tells apart (#41; capture::browser_named),
-/// all captured on.
-pub const BROWSERS: [&str; 12] = [
-    "Apple Safari",          // not translated: a product name
-    "Brave Browser",         // not translated: a product name
-    "Floorp",                // not translated: a product name
-    "Google Chrome",         // not translated: a product name
-    "Internet Explorer",     // not translated: a product name
-    "LibreWolf",             // not translated: a product name
-    "Microsoft Edge",        // not translated: a product name
-    "Microsoft Edge Legacy", // not translated: a product name
-    "Mozilla Firefox",       // not translated: a product name
-    "Opera",                 // not translated: a product name
-    "Waterfox",              // not translated: a product name
-    "Zen Browser",           // not translated: a product name
-];
+/// The browser supported by this build.
+pub const BROWSERS: [&str; 1] = ["Microsoft Edge"];
 
 impl Settings {
-    /// A list saved before a browser was known gets it, captured (as an unlisted browser
-    /// already is, capture::CaptureRules::captures), so Options shows it.
+    /// Keep Edge's saved choice and discard other browsers from the integration list.
     pub fn list_known_browsers(&mut self) {
+        self.browsers.retain(|(name, _)| name == "Microsoft Edge");
         for b in BROWSERS {
             if !self.browsers.iter().any(|(n, _)| n == b) {
                 self.browsers.push((b.to_owned(), true));
             }
         }
+    }
+
+    pub fn normalize_build(&mut self) {
+        self.list_known_browsers();
+        self.theme = "metro".into();
+        self.always_dark = true;
+        self.dark_mode_support = true;
+        self.language = Some("en".into());
+        self.language_asked = true;
+        self.renderer = Some(crate::renderer::Api::Direct3D);
+        self.clipboard_autostart = false;
+        self.drop_target = false;
+        self.limits_on = false;
+        self.extract_auto = false;
+        self.sounds = Default::default();
     }
 }
 
@@ -447,9 +443,9 @@ impl Default for Settings {
             branches: [true, false, false, false],
             view: None,
             dark_mode_support: true,
-            always_dark: false,
-            theme: "classic".into(),
-            renderer: None,
+            always_dark: true,
+            theme: "metro".into(),
+            renderer: Some(crate::renderer::Api::Direct3D),
             window_system: None,
             interface_size: 100,
             smooth_text: false,
@@ -458,12 +454,12 @@ impl Default for Settings {
             limits_hours: 5,
             limits_warn: true,
             launch_on_startup: false,
-            language: None,
-            language_asked: false,
+            language: Some("en".into()),
+            language_asked: true,
             helpers_asked: false,
             extension_never_ask: false,
-            clipboard_autostart: true,
-            minimize_to_tray: true,
+            clipboard_autostart: false,
+            minimize_to_tray: false,
             close_to_tray: true,
             keep_private_downloads: false,
             show_hide_hotkey: String::new(),
@@ -502,7 +498,6 @@ impl Default for Settings {
             proxy_port: String::new(),
             proxy_user: String::new(),
             proxy_pass: String::new(),
-            archive_passwords: String::new(),
             proxy_http: false,
             proxy_https: false,
             proxy_ftp: false,
@@ -620,17 +615,6 @@ impl Settings {
             },
             &self.proxy_pass,
         );
-        disk.archive_passwords = kept(
-            "archives/passwords".into(),
-            &|| {
-                format!(
-                    "Mister Download Manager: {}",
-                    // i18n: the list of archive passwords in the system's keychain (Credential Manager, the keyring): its name there
-                    crate::i18n::t("archive passwords")
-                )
-            },
-            &self.archive_passwords,
-        );
         for (a, d) in self.debrid_accounts.iter().zip(&mut disk.debrid_accounts) {
             d.secret = kept(
                 format!("debrid/{}", a.id),
@@ -654,43 +638,6 @@ impl Settings {
         pass.finish();
         disk
     }
-
-    /// Options → Archives' passwords, in the order they are tried.
-    pub fn archive_password_list(&self) -> Vec<String> {
-        password_lines(&self.archive_passwords)
-    }
-
-    /// `password` first in that list (added, or moved up): it opened an archive, or the user
-    /// asked to remember it.
-    pub fn remember_archive_password(&mut self, password: &str) {
-        if password.is_empty() || password.contains(['\n', '\r']) {
-            return;
-        }
-        let mut list = self.archive_password_list();
-        list.retain(|p| p != password);
-        list.insert(0, password.to_owned());
-        self.archive_passwords = list.join("\n");
-    }
-
-    /// Options → Archives' folder choice, for mdm-extract.
-    pub fn extract_into(&self) -> mdm_extract::Subfolder {
-        match self.extract_subfolder {
-            1 => mdm_extract::Subfolder::Always,
-            2 => mdm_extract::Subfolder::Never,
-            _ => mdm_extract::Subfolder::Smart,
-        }
-    }
-}
-
-/// The passwords of a list typed one a line: blank lines out, each once, spaces kept (a password
-/// may have them).
-pub fn password_lines(text: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter(|l| seen.insert(l.to_string()))
-        .map(str::to_owned)
-        .collect()
 }
 
 /// FNV-1a: a stable hash (std's may change between builds), for keychain keys.
@@ -1404,19 +1351,41 @@ mod tests {
         assert_eq!(back.torrent_associations, Some(true));
     }
 
-    /// #41: a list saved before Zen was known gets it, captured; a choice made is kept.
     #[test]
-    fn saved_browser_lists_get_new_browsers() {
+    fn saved_browser_lists_keep_only_edge_and_its_choice() {
         let mut s = Settings {
-            browsers: vec![("Google Chrome".into(), false)],
+            browsers: vec![
+                ("Google Chrome".into(), true),
+                ("Microsoft Edge".into(), false),
+            ],
             ..Settings::default()
         };
         s.list_known_browsers();
-        assert_eq!(s.browsers[0], ("Google Chrome".into(), false));
-        assert!(s.browsers.contains(&("Zen Browser".into(), true)));
+        assert_eq!(s.browsers[0], ("Microsoft Edge".into(), false));
         assert_eq!(s.browsers.len(), BROWSERS.len());
         s.list_known_browsers();
         assert_eq!(s.browsers.len(), BROWSERS.len(), "each once");
+    }
+
+    #[test]
+    fn older_profiles_cannot_reenable_removed_background_features() {
+        let mut s = Settings {
+            theme: "classic".into(),
+            always_dark: false,
+            language: Some("hi".into()),
+            clipboard_autostart: true,
+            drop_target: true,
+            limits_on: true,
+            extract_auto: true,
+            sounds: std::array::from_fn(|_| (true, "old.wav".into())),
+            ..Settings::default()
+        };
+        s.normalize_build();
+        assert_eq!(s.theme, "metro");
+        assert!(s.always_dark && s.language_asked);
+        assert_eq!(s.language.as_deref(), Some("en"));
+        assert!(!s.clipboard_autostart && !s.drop_target && !s.limits_on && !s.extract_auto);
+        assert!(s.sounds.iter().all(|(on, _)| !on));
     }
 
     #[test]
@@ -1626,7 +1595,6 @@ pub(crate) mod sealed {
         fn the_proxy_password_and_debrid_secrets_are_sealed_on_disk() {
             let s = crate::settings::Settings {
                 proxy_pass: "proxy-s3cret".into(),
-                archive_passwords: "zip-s3cret\nother".into(),
                 debrid_accounts: vec![crate::settings::DebridAccount {
                     id: 1,
                     user: "me".into(),
@@ -1637,15 +1605,10 @@ pub(crate) mod sealed {
             };
             let json = serde_json::to_string(&s).unwrap();
             if cfg!(windows) {
-                assert!(
-                    !json.contains("proxy-s3cret")
-                        && !json.contains("rd-s3cret")
-                        && !json.contains("zip-s3cret")
-                );
+                assert!(!json.contains("proxy-s3cret") && !json.contains("rd-s3cret"));
             }
             let back: crate::settings::Settings = serde_json::from_str(&json).unwrap();
             assert_eq!(back.proxy_pass, "proxy-s3cret");
-            assert_eq!(back.archive_password_list(), vec!["zip-s3cret", "other"]);
             assert!(back.debrid_accounts[0].account().is_some());
             // Never in a debug dump either.
             assert!(!format!("{:?}", back.debrid_accounts).contains("rd-s3cret"));

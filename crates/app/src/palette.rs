@@ -619,50 +619,12 @@ pub static CLASSIC: Theme = Theme {
     controls: Controls::CLASSIC,
 };
 
-/// The built-in themes that don't change by themselves, the default first: the classic look
-/// (written out above), then the ones shipped as theme files (`assets/themes/`, in the format
-/// users write, so they double as examples). Native follows the system and is made when chosen
-/// (`crate::native`).
-pub fn builtins() -> [&'static Theme; 9] {
-    static HIGH_CONTRAST: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin(
-            "high-contrast",
-            include_str!("../assets/themes/high-contrast.toml"),
-        )
-    });
-    // The style themes (#45): their era's look, the layout kept.
+/// The single shipped theme. Classic remains the palette's base for deriving its roles.
+pub fn builtins() -> [&'static Theme; 1] {
     static METRO: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
         crate::themefile::builtin("metro", include_str!("../assets/themes/metro.toml"))
     });
-    static ADWAITA: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin("adwaita", include_str!("../assets/themes/adwaita.toml"))
-    });
-    static BREEZE: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin("breeze", include_str!("../assets/themes/breeze.toml"))
-    });
-    static LUNA: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin("luna", include_str!("../assets/themes/luna.toml"))
-    });
-    static AERO: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin("aero", include_str!("../assets/themes/aero.toml"))
-    });
-    static AQUA: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin("aqua", include_str!("../assets/themes/aqua.toml"))
-    });
-    static EMERALD: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
-        crate::themefile::builtin("emerald", include_str!("../assets/themes/emerald.toml"))
-    });
-    [
-        &CLASSIC,
-        &HIGH_CONTRAST,
-        &METRO,
-        &ADWAITA,
-        &BREEZE,
-        &LUNA,
-        &AERO,
-        &AQUA,
-        &EMERALD,
-    ]
+    [&METRO]
 }
 
 /// `#rrggbb` or `#rrggbbaa` (the `#` optional, as Base16 writes them) as a colour.
@@ -882,83 +844,10 @@ mod tests {
             assert_eq!(l.theme.name, name);
             assert!(l.theme.dark.dark && !l.theme.light.dark);
         }
-        let metro = builtins()[2];
+        let metro = builtins()[0];
         assert_eq!(metro.icon_set.as_deref(), Some("metro"));
         assert_eq!(metro.controls.caption, CaptionLook::Metro);
         assert_eq!(metro.metrics.control_radius, 0.0);
-        let adwaita = builtins()[3];
-        assert_eq!(adwaita.icon_set.as_deref(), Some("adwaita"));
-        assert_eq!(adwaita.controls.caption, CaptionLook::Adwaita);
-        assert_eq!(adwaita.controls.focus, FocusLook::Ring);
-        assert_eq!(adwaita.controls.check, CheckLook::Adwaita);
-        assert_eq!(adwaita.controls.field_focus, FieldFocus::Ring);
-        let breeze = builtins()[4];
-        assert_eq!(breeze.icon_set.as_deref(), Some("breeze"));
-        assert_eq!(breeze.controls.caption, CaptionLook::Breeze);
-        assert_eq!(breeze.controls.focus, FocusLook::Frame);
-        assert_eq!(breeze.controls.check, CheckLook::Breeze);
-        assert_eq!(breeze.controls.button, ButtonLook::Breeze);
-        assert_eq!(breeze.controls.field_focus, FieldFocus::Border);
-        // The era themes: their own buttons, boxes, bars and title bars, and icon sets.
-        for (i, id, button, check, progress, caption) in [
-            (
-                5,
-                "luna",
-                ButtonLook::Luna,
-                CheckLook::Luna,
-                ProgressLook::Blocks,
-                CaptionLook::Luna,
-            ),
-            (
-                6,
-                "aero",
-                ButtonLook::Aero,
-                CheckLook::Aero,
-                ProgressLook::Gloss,
-                CaptionLook::Aero,
-            ),
-            (
-                7,
-                "aqua",
-                ButtonLook::Aqua,
-                CheckLook::Aqua,
-                ProgressLook::Gloss,
-                CaptionLook::Aqua,
-            ),
-        ] {
-            let t = builtins()[i];
-            assert_eq!(t.id, id);
-            assert_eq!(t.icon_set.as_deref(), Some(id));
-            assert_eq!(t.controls.button, button, "{id}");
-            assert_eq!(t.controls.check, check, "{id}");
-            assert_eq!(t.controls.progress, progress, "{id}");
-            assert_eq!(t.controls.caption, caption, "{id}");
-            // Their buttons shine: the gloss isn't the face.
-            for p in [&t.light, &t.dark] {
-                assert_ne!(p.gloss, p.button, "{id} {}", p.dark);
-            }
-        }
-        // Aqua's keyboard focus is a ring, as Mac OS X draws it; Luna's and Aero's Windows'
-        // dotted rectangle.
-        assert_eq!(builtins()[7].controls.focus, FocusLook::Ring);
-        assert_eq!(builtins()[5].controls.focus, FocusLook::Dotted);
-        assert_eq!(builtins()[6].controls.focus, FocusLook::Dotted);
-        // Emerald: flat 6-point corners, ring focus, and its chips inked rather than lettered
-        // in white — the soft fill carries the near-black text in both variants.
-        let emerald = builtins()[8];
-        assert_eq!(emerald.metrics.control_radius, 6.0);
-        assert_eq!(emerald.controls.field_focus, FieldFocus::Ring);
-        assert_eq!(emerald.controls.focus, FocusLook::Ring);
-        assert_eq!(emerald.controls.button, ButtonLook::Fluent);
-        assert_eq!(emerald.controls.check, CheckLook::Fluent);
-        assert_eq!(emerald.controls.progress, ProgressLook::Bar);
-        assert_eq!(emerald.controls.scroll, ScrollLook::Overlay);
-        use crate::derive::contrast;
-        for p in [&emerald.light, &emerald.dark] {
-            assert!(contrast(p.chip_text, p.chip_web) >= 4.5);
-            assert!(contrast(p.chip_text, p.chip_torrent) >= 4.5);
-            assert!(contrast(p.text, p.window) >= 4.5);
-        }
     }
 
     /// The classic look's dark secondary and error texts read on every dark surface they sit on

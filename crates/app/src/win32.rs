@@ -161,10 +161,128 @@ pub fn set_main_window(cc: &eframe::CreationContext<'_>) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if let Ok(RawWindowHandle::Win32(h)) = cc.window_handle().map(|h| h.as_raw()) {
         MAIN_WINDOW.store(h.hwnd.get(), std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: eframe's main window, on the thread creating the app.
+        unsafe { coalesce_moves(h.hwnd.get() as HWND) };
     }
 }
 
 // ---- The session's end (shut down, restart, sign out; an installer closing MDM) ---------------
+
+const MOVE_SUBCLASS: usize = 0x6d76;
+
+#[derive(Default)]
+struct MoveLoop {
+    window: isize,
+    moving: bool,
+    pending: Option<windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPOS>,
+}
+
+thread_local! {
+    static MOVE_LOOP: std::cell::RefCell<MoveLoop> = const {
+        std::cell::RefCell::new(MoveLoop { window: 0, moving: false, pending: None })
+    };
+}
+
+/// # Safety
+/// `hwnd` belongs to this thread.
+unsafe fn coalesce_moves(hwnd: HWND) {
+    // SAFETY: the caller's window; the procedure lives for the process's lifetime.
+    unsafe { SetWindowSubclass(hwnd, Some(move_proc), MOVE_SUBCLASS, 0) };
+}
+
+/// A move changes no client pixels. winit turns each position notification into a repaint
+/// of every immediate viewport, including their blocking buffer swaps. Keep Windows' native
+/// move loop but deliver one final position. Timed download repaints, resizing and DPI
+/// changes still run.
+unsafe extern "system" fn move_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOSIZE, SWP_SHOWWINDOW, WINDOWPOS, WM_DPICHANGED,
+        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVING, WM_NCDESTROY, WM_WINDOWPOSCHANGED,
+    };
+    match msg {
+        WM_ENTERSIZEMOVE => MOVE_LOOP.with_borrow_mut(|state| {
+            *state = MoveLoop {
+                window: hwnd as isize,
+                ..Default::default()
+            };
+        }),
+        WM_MOVING => MOVE_LOOP.with_borrow_mut(|state| {
+            if state.window == hwnd as isize {
+                state.moving = true;
+            }
+        }),
+        WM_DPICHANGED => MOVE_LOOP.with_borrow_mut(|state| {
+            if state.window == hwnd as isize {
+                state.moving = false;
+                state.pending = None;
+            }
+        }),
+        WM_WINDOWPOSCHANGED if lparam != 0 => {
+            // SAFETY: WM_WINDOWPOSCHANGED supplies a WINDOWPOS valid for this call.
+            let mut position = unsafe { *(lparam as *const WINDOWPOS) };
+            let deferred = MOVE_LOOP.with_borrow_mut(|state| {
+                if state.window != hwnd as isize {
+                    return false;
+                }
+                let pure_move = position.flags & SWP_NOSIZE != 0
+                    && position.flags
+                        & (SWP_NOMOVE | SWP_FRAMECHANGED | SWP_HIDEWINDOW | SWP_SHOWWINDOW)
+                        == 0;
+                if state.moving && pure_move {
+                    state.pending = Some(position);
+                    true
+                } else if position.flags & (SWP_NOMOVE | SWP_NOSIZE) != (SWP_NOMOVE | SWP_NOSIZE)
+                    || position.flags & (SWP_FRAMECHANGED | SWP_HIDEWINDOW | SWP_SHOWWINDOW) != 0
+                {
+                    state.pending = None;
+                    false
+                } else {
+                    false
+                }
+            });
+            if deferred {
+                position.flags |= SWP_NOMOVE;
+                // SAFETY: only the notification is coalesced, not the actual placement. The
+                // remaining flags still reach every other subclass and DefWindowProc.
+                return unsafe {
+                    DefSubclassProc(hwnd, msg, wparam, &position as *const WINDOWPOS as LPARAM)
+                };
+            }
+        }
+        WM_EXITSIZEMOVE | WM_NCDESTROY => {
+            let pending = MOVE_LOOP.with_borrow_mut(|state| {
+                if state.window != hwnd as isize {
+                    return None;
+                }
+                std::mem::take(state).pending
+            });
+            if msg == WM_EXITSIZEMOVE
+                && let Some(position) = pending
+            {
+                // SAFETY: the final real placement, after releasing the state borrow (winit
+                // can re-enter while handling it), before it hears the end of the move loop.
+                unsafe {
+                    DefSubclassProc(
+                        hwnd,
+                        WM_WINDOWPOSCHANGED,
+                        0,
+                        &position as *const _ as LPARAM,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    // SAFETY: pass all other window messages through unchanged.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
 
 /// Why the session ends, as WM_QUERYENDSESSION and WM_ENDSESSION say (their lParam).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -772,6 +890,33 @@ pub fn thin_frame_on(
     scale: f32,
     hide_item: Option<&str>,
 ) -> Option<isize> {
+    let kind = if windows_11() {
+        Drawn::Fixed
+    } else {
+        Drawn::Edged
+    };
+    frame_on(window, client, scale, hide_item, kind)
+}
+
+/// A progress window keeps the system's sizing frame and its native resize hit tests.
+pub fn progress_frame(
+    window: Option<isize>,
+    title: &str,
+    client: [f32; 2],
+    scale: f32,
+    hide_item: Option<&str>,
+) -> Option<isize> {
+    let window = window.or_else(|| find_own_window(title).map(|h| h as isize))?;
+    frame_on(window, client, scale, hide_item, Drawn::Sizable)
+}
+
+fn frame_on(
+    window: isize,
+    client: [f32; 2],
+    scale: f32,
+    hide_item: Option<&str>,
+    kind: Drawn,
+) -> Option<isize> {
     use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, DeleteMenu, GetSystemMenu, IsWindow, MF_BYCOMMAND, MF_STRING,
@@ -785,13 +930,6 @@ pub fn thin_frame_on(
     {
         return None;
     }
-    // Windows 11 draws its 1 px border round a window without a caption style; Windows 10 draws
-    // none, so there it has the system's own (WS_BORDER).
-    let kind = if windows_11() {
-        Drawn::Fixed
-    } else {
-        Drawn::Edged
-    };
     // SAFETY: our own window, on its thread; the menu text and the rectangle are locals read
     // during the calls.
     unsafe {
@@ -804,9 +942,8 @@ pub fn thin_frame_on(
                 AppendMenuW(menu, MF_STRING, SC_HIDE_TO_TRAY, w.as_ptr());
             }
         }
-        // The window is the client and the frame its styles describe round it, for its own DPI:
-        // none on Windows 11, the 1 px border on Windows 10 (without the caption style a
-        // minimized window has for its animation, [`animation_caption`]).
+        // The client plus its actual frame at this DPI, without the temporary caption
+        // style used for minimize/restore animations.
         let style = drawn_style(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32, kind);
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
         let mut rc = RECT {
@@ -830,7 +967,7 @@ pub fn thin_frame_on(
 }
 
 /// Windows 11 (build 22000 on). Every window whose title bar is ours and that keeps its size
-/// (the progress window, a style theme's dialogs) is framed without a caption style on every
+/// (a style theme's dialogs) is framed without a caption style on every
 /// version ([`thin_frame`]): with the caption style hidden by our WM_NCCALCSIZE, a Windows 11
 /// Insider build (#208) and Windows 10 22H2 (#620) showed the window's picture where the style's
 /// client would have been, a black band a title bar tall above it, every click landing above what
@@ -855,7 +992,7 @@ fn windows_11() -> bool {
 /// How a window whose title bar is ours is framed without a caption style ([`caption_less`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Drawn {
-    /// A fixed size (the progress window, a dialog with a style theme's title bar): a plain
+    /// A fixed size (a dialog with a style theme's title bar): a plain
     /// popup, all client, as the drop target and the menus are (#210, #231). Windows 11 draws
     /// its border, over the client's edge.
     Fixed,
@@ -930,6 +1067,7 @@ unsafe fn caption_less(hwnd: HWND, kind: Drawn) {
     // SAFETY: (the caller's) our own window; the proc lives as long as the program; the DWM
     // attribute is read from a local during the call.
     unsafe {
+        coalesce_moves(hwnd);
         // The subclass first: it keeps the styles below when winit sets its own again.
         SetWindowSubclass(hwnd, Some(caption_less_proc), DRAWN_SUBCLASS, kind.data());
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
@@ -1627,6 +1765,117 @@ fn maximized_to_work_area(hwnd: HWND) -> Option<(RECT, windows_sys::Win32::Found
 mod frame_tests {
     use super::*;
 
+    unsafe extern "system" fn observe_moves(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        data: usize,
+    ) -> LRESULT {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WINDOWPOS, WM_WINDOWPOSCHANGED};
+        if msg == WM_WINDOWPOSCHANGED && lparam != 0 {
+            // SAFETY: the test keeps this Vec alive until it removes this subclass; Windows
+            // supplies the WINDOWPOS for the duration of this call.
+            unsafe {
+                let position = &*(lparam as *const WINDOWPOS);
+                if position.flags & SWP_NOMOVE == 0 {
+                    (*(data as *mut Vec<(i32, i32)>)).push((position.x, position.y));
+                }
+            }
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    /// # Safety
+    /// A test window on this thread, moved off screen only.
+    pub(super) unsafe fn check_move_notifications(hwnd: HWND) {
+        use windows_sys::Win32::UI::Shell::RemoveWindowSubclass;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowRect, SWP_NOSIZE, SendMessageW, WINDOWPOS, WM_DPICHANGED, WM_ENTERSIZEMOVE,
+            WM_EXITSIZEMOVE, WM_MOVING, WM_WINDOWPOSCHANGED,
+        };
+        let mut positions = Vec::<(i32, i32)>::new();
+        const OBSERVER: usize = 0x6d77;
+        // SAFETY: the caller's test window, and an observer below the move subclass; its data
+        // points to the Vec kept alive until the observer is removed below.
+        unsafe {
+            RemoveWindowSubclass(hwnd, Some(move_proc), MOVE_SUBCLASS);
+            SetWindowSubclass(
+                hwnd,
+                Some(observe_moves),
+                OBSERVER,
+                &mut positions as *mut _ as usize,
+            );
+            coalesce_moves(hwnd);
+            let place = |x, flags| {
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    x,
+                    -20000,
+                    701,
+                    501,
+                    flags | SWP_NOACTIVATE | SWP_NOZORDER,
+                )
+            };
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            let mut r: RECT = zeroed();
+            GetWindowRect(hwnd, &mut r);
+            SendMessageW(hwnd, WM_MOVING, 0, &mut r as *mut _ as LPARAM);
+            for x in [-19990, -19980, -19970] {
+                place(x, SWP_NOSIZE);
+            }
+            let no_op = WINDOWPOS {
+                hwnd,
+                flags: SWP_NOMOVE | SWP_NOSIZE,
+                ..zeroed()
+            };
+            SendMessageW(hwnd, WM_WINDOWPOSCHANGED, 0, &no_op as *const _ as LPARAM);
+            GetWindowRect(hwnd, &mut r);
+            assert_eq!(r.left, -19970, "Windows must move the window immediately");
+            assert!(
+                positions.is_empty(),
+                "pure drag steps must not each cause a repaint"
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            assert_eq!(positions, [(-19970, -20000)], "deliver the final position");
+
+            positions.clear();
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            SendMessageW(hwnd, WM_MOVING, 0, &mut r as *mut _ as LPARAM);
+            place(-19960, SWP_NOSIZE);
+            place(-19950, 0);
+            assert_eq!(
+                positions,
+                [(-19950, -20000)],
+                "a resize must pass through live"
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            assert_eq!(positions.len(), 1, "do not replay a pre-resize position");
+
+            positions.clear();
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            SendMessageW(hwnd, WM_MOVING, 0, &mut r as *mut _ as LPARAM);
+            place(-19940, SWP_NOSIZE);
+            SendMessageW(
+                hwnd,
+                WM_DPICHANGED,
+                96 | (96 << 16),
+                &r as *const _ as LPARAM,
+            );
+            place(-19930, SWP_NOSIZE);
+            assert_eq!(
+                positions,
+                [(-19930, -20000)],
+                "a DPI change must pass through"
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            assert_eq!(positions.len(), 1);
+            RemoveWindowSubclass(hwnd, Some(observe_moves), OBSERVER);
+        }
+    }
+
     #[test]
     fn the_drawn_title_bar_hits_as_caption_icon_and_buttons() {
         // 548 × 32 points at 1.5 px per point, 4 buttons of 46 at the end, the icon at the start.
@@ -1726,6 +1975,7 @@ mod caption_less_tests {
         for (n, (style, kind)) in [
             (WINIT_PROGRESS, Drawn::Fixed),
             (WINIT_PROGRESS, Drawn::Edged),
+            (WINIT_PROGRESS, Drawn::Sizable),
             (WINIT_MAIN, Drawn::Sizable),
         ]
         .into_iter()
@@ -1763,7 +2013,17 @@ mod caption_less_tests {
                     std::ptr::null(),
                 );
                 assert!(!hwnd.is_null());
-                caption_less(hwnd, kind);
+                if style == WINIT_PROGRESS && kind == Drawn::Sizable {
+                    assert_eq!(
+                        progress_frame(Some(hwnd as isize), &title, [548.0, 472.0], 1.0, None),
+                        Some(hwnd as isize)
+                    );
+                    let mut client: RECT = zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    assert_eq!([client.right, client.bottom], [548, 472]);
+                } else {
+                    caption_less(hwnd, kind);
+                }
                 let st = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
                 let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
                 assert_eq!(st, drawn_style(style, kind));
@@ -1782,8 +2042,7 @@ mod caption_less_tests {
                     [c.right, c.bottom],
                     [w.right - w.left - l - r, w.bottom - w.top - t - b]
                 );
-                // Its edges: the system's sizing edges where it is resizable, else the client's
-                // (the progress window keeps its size).
+                // Its edges: the system's sizing edges where it is resizable, else the client's.
                 let hit = |x: i32, y: i32| {
                     SendMessageW(
                         hwnd,
@@ -1822,6 +2081,9 @@ mod caption_less_tests {
                 );
                 GetClientRect(hwnd, &mut c);
                 assert_eq!([c.right, c.bottom], [700 - l - r, 500 - t - b]);
+                if sizable {
+                    super::frame_tests::check_move_notifications(hwnd);
+                }
                 // Minimizing, maximizing or restoring (#874): the caption style for the length of
                 // the animation, and the window framed as without it, its client in place.
                 animation_caption(hwnd, kind, true);
@@ -5400,20 +5662,6 @@ pub fn system_proxy() -> Option<(String, String)> {
     Some((host.to_owned(), port.to_owned()))
 }
 
-/// Play a .wav file without waiting (Options → Sounds).
-pub fn play_sound(file: &str) {
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
-    let wide: Vec<u16> = file.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: a NUL-terminated path; SND_ASYNC copies what it needs before returning.
-    unsafe {
-        PlaySoundW(
-            wide.as_ptr(),
-            std::ptr::null_mut(),
-            SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
-        );
-    }
-}
-
 /// The name MDM is listed under in Windows' Default apps: its value in RegisteredApplications,
 /// the same as its Capabilities' ApplicationName (Microsoft: "ApplicationName must always match
 /// the name that is registered under RegisteredApplications"). tools/installer/mdm.iss writes
@@ -6969,19 +7217,6 @@ pub fn cli_console(launcher: Option<u32>) {
 /// The OpenGL driver in its own words, for the log and the crash reports (#280): its renderer
 /// (the graphics card) and version, which on Windows carries the driver's build (Intel's
 /// "4.6.0 - Build 31.0.101.…", NVIDIA's "4.6.0 NVIDIA 5xx.xx"). Linux and macOS: unix.rs.
-pub fn gl_driver(gl: &eframe::glow::Context) -> String {
-    use eframe::glow::{self, HasContext as _};
-    // SAFETY: called while eframe makes the app, with its context current on this thread;
-    // glGetString only reads the driver's strings.
-    let (renderer, version) = unsafe {
-        (
-            gl.get_parameter_string(glow::RENDERER),
-            gl.get_parameter_string(glow::VERSION),
-        )
-    };
-    format!("{renderer} ({version})")
-}
-
 /// The graphics adapters and their drivers' versions, as Direct3D 12 sees them (DXGI; the
 /// version as wgpu writes it, "32.0.15.6224"), and whether each is a software renderer (WARP):
 /// a remembered failure is tried again once they change (renderer.rs, #1205). Read without
@@ -7026,14 +7261,6 @@ pub fn graphics_drivers() -> Option<Vec<(String, String, bool)>> {
         }
         Some(list)
     }
-}
-
-/// Windows' clipboard sequence number: it changes each time the clipboard does, and asking for
-/// it neither opens the clipboard nor waits for its owner (clipboard.rs: the watch for copied
-/// links reads the clipboard only when it changed).
-pub fn clipboard_sequence() -> u32 {
-    // SAFETY: takes nothing, returns a number.
-    unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
 }
 
 /// Tests only: a clipboard apart from the person's at this computer (#1103).
@@ -7830,219 +8057,6 @@ pub fn keychain_list(service: &str) -> Result<Vec<String>, crate::secrets::Fault
         CredFree(creds.cast());
     }
     Ok(accounts)
-}
-
-// ---- waking the computer for a queue (#142) -----------------------------------------------
-
-/// Windows' "Allow wake timers" power option for the active plan (0 off, 1 on, 2 important
-/// wake timers only), on mains power (`ac`) and on battery (`dc`), and the power source now.
-pub struct WakeTimers {
-    pub ac: u32,
-    pub dc: u32,
-    pub on_battery: bool,
-    pub has_battery: bool,
-}
-
-/// Power Options → Sleep → Allow wake timers, as `powercfg /q SCHEME_CURRENT SUB_SLEEP
-/// RTCWAKE` shows it. Read only; a setting that can't be read counts as on (nothing to warn of).
-pub fn wake_timers() -> WakeTimers {
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::System::Power::{
-        GetSystemPowerStatus, PowerGetActiveScheme, PowerReadACValueIndex, PowerReadDCValueIndex,
-        SYSTEM_POWER_STATUS,
-    };
-    use windows_sys::core::GUID;
-    const SUB_SLEEP: GUID = GUID::from_u128(0x238c9fa8_0aad_41ed_83f4_97be242c8f20);
-    const RTCWAKE: GUID = GUID::from_u128(0xbd3b718a_0680_4d9d_8ab2_e1d2b4ac806d);
-    let (mut ac, mut dc) = (1u32, 1u32);
-    let mut scheme: *mut GUID = std::ptr::null_mut();
-    // SAFETY: PowerGetActiveScheme allocates the GUID it returns (freed with LocalFree below);
-    // the reads only write the u32 given.
-    unsafe {
-        if PowerGetActiveScheme(std::ptr::null_mut(), &mut scheme) == 0 && !scheme.is_null() {
-            let mut v = 0u32;
-            if PowerReadACValueIndex(std::ptr::null_mut(), scheme, &SUB_SLEEP, &RTCWAKE, &mut v)
-                == 0
-            {
-                ac = v;
-            }
-            if PowerReadDCValueIndex(std::ptr::null_mut(), scheme, &SUB_SLEEP, &RTCWAKE, &mut v)
-                == 0
-            {
-                dc = v;
-            }
-            LocalFree(scheme.cast());
-        }
-    }
-    // SAFETY: plain data, zero is valid; a plain query into it.
-    let mut st: SYSTEM_POWER_STATUS = unsafe { zeroed() };
-    let ok = unsafe { GetSystemPowerStatus(&mut st) } != 0;
-    WakeTimers {
-        ac,
-        dc,
-        // ACLineStatus 0: on battery; BatteryFlag 128: no system battery, 255: unknown.
-        on_battery: ok && st.ACLineStatus == 0,
-        has_battery: ok && st.BatteryFlag != 128 && st.BatteryFlag != 255,
-    }
-}
-
-/// Power Options' advanced settings, where "Allow wake timers" is (under Sleep). Never from an
-/// off-screen test run: its windows belong to the person at the computer.
-pub fn open_power_options() {
-    if crate::offscreen() {
-        return;
-    }
-    use std::os::windows::process::CommandExt;
-    crate::launch::spawn("power options", move || {
-        let _ = std::process::Command::new("control.exe")
-            .arg("powercfg.cpl,,3")
-            .creation_flags(0x0800_0000)
-            .spawn();
-    });
-}
-
-/// A change to the wake timer, and where its result goes.
-struct WakeCmd {
-    /// When (seconds since 1970, UTC) and for which queue; None cancels.
-    at: Option<(i64, String)>,
-    reply: std::sync::mpsc::Sender<Result<(), String>>,
-}
-
-/// Wake the computer at `at` (seconds since 1970, UTC; for the queue named), or cancel the wake
-/// (None). A waitable timer set to resume the computer (SetWaitableTimer, fResume): it lives in
-/// MDM's process (Windows cancels it if the thread that set it ends, so one thread of its own
-/// keeps it), lists in `powercfg /waketimers`, and goes with MDM: nothing is left behind when
-/// MDM quits or is uninstalled.
-pub fn wake_at(at: Option<(i64, &str)>) -> Result<(), String> {
-    use std::sync::{Mutex, OnceLock, mpsc};
-    static THREAD: OnceLock<Mutex<mpsc::Sender<WakeCmd>>> = OnceLock::new();
-    let tx = THREAD.get_or_init(|| {
-        let (tx, rx) = mpsc::channel();
-        let _ = std::thread::Builder::new()
-            .name("mdm-wake".into())
-            .spawn(move || wake_thread(rx));
-        Mutex::new(tx)
-    });
-    let (reply, answer) = mpsc::channel();
-    let cmd = WakeCmd {
-        at: at.map(|(t, q)| (t, q.to_owned())),
-        reply,
-    };
-    let sent = tx.lock().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false);
-    let lost = || "the wake timer's thread is gone".to_owned();
-    if !sent {
-        return Err(lost());
-    }
-    answer
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap_or_else(|_| Err(lost()))
-}
-
-fn wake_thread(rx: std::sync::mpsc::Receiver<WakeCmd>) {
-    use std::sync::mpsc::RecvTimeoutError;
-    use windows_sys::Win32::Foundation::{ERROR_NOT_SUPPORTED, GetLastError, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{
-        CancelWaitableTimer, CreateWaitableTimerExW, SetWaitableTimer, TIMER_ALL_ACCESS,
-        WaitForSingleObject,
-    };
-    // A synchronization timer (auto-reset): the check below sees each firing once.
-    // SAFETY: no name, default security; the handle is this thread's for the process's life.
-    let timer =
-        unsafe { CreateWaitableTimerExW(std::ptr::null(), std::ptr::null(), 0, TIMER_ALL_ACCESS) };
-    let mut queue = String::new();
-    loop {
-        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(cmd) => {
-                let result = if timer.is_null() {
-                    // SAFETY: a plain query.
-                    Err(format!("CreateWaitableTimerExW failed ({})", unsafe {
-                        GetLastError()
-                    }))
-                } else if let Some((unix, q)) = cmd.at {
-                    // FILETIME: 100 ns steps since 1601, UTC (positive: an absolute time).
-                    let due: i64 = (unix + 11_644_473_600) * 10_000_000;
-                    // SAFETY: our timer; no completion routine; fResume = TRUE. GetLastError
-                    // right after, as the call's documentation asks.
-                    let (ok, err) = unsafe {
-                        let ok = SetWaitableTimer(timer, &due, 0, None, std::ptr::null(), 1) != 0;
-                        (ok, GetLastError())
-                    };
-                    queue = q;
-                    if !ok {
-                        Err(format!("SetWaitableTimer failed ({err})"))
-                    } else if err == ERROR_NOT_SUPPORTED {
-                        // Set, but this computer can't be woken by it.
-                        Err(crate::i18n::t(
-                            // i18n: the Scheduler, under "Wake the computer to run this queue": Windows set the timer but can't wake this computer with it
-                            "This computer can't be woken by a timer",
-                        )
-                        .to_owned())
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    // SAFETY: our timer.
-                    unsafe { CancelWaitableTimer(timer) };
-                    Ok(())
-                };
-                let _ = cmd.reply.send(result);
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                // SAFETY: our timer; a zero wait only looks.
-                if !timer.is_null() && unsafe { WaitForSingleObject(timer, 0) } == WAIT_OBJECT_0 {
-                    tracing::info!("wake: the wake timer went off (queue {queue:?})");
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => return,
-        }
-    }
-}
-
-/// Keep the computer from sleeping while `reason` is given (a power request, listed with its
-/// reason in `powercfg /requests`); None lets it sleep again as its power plan says. False when
-/// Windows refused.
-pub fn keep_awake(reason: Option<&str>) -> bool {
-    use std::sync::Mutex;
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Power::{
-        PowerClearRequest, PowerCreateRequest, PowerRequestSystemRequired, PowerSetRequest,
-    };
-    use windows_sys::Win32::System::Threading::{
-        POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT,
-    };
-    static REQUEST: Mutex<Option<isize>> = Mutex::new(None);
-    let mut held = REQUEST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(h) = held.take() {
-        // SAFETY: the request made below, cleared and closed once.
-        unsafe {
-            PowerClearRequest(h as _, PowerRequestSystemRequired);
-            CloseHandle(h as _);
-        }
-    }
-    let Some(reason) = reason else {
-        return true;
-    };
-    let mut text: Vec<u16> = reason.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: plain data, zero is valid.
-    let mut ctx: REASON_CONTEXT = unsafe { zeroed() };
-    // POWER_REQUEST_CONTEXT_VERSION is 0.
-    ctx.Version = 0;
-    ctx.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
-    ctx.Reason.SimpleReasonString = text.as_mut_ptr();
-    // SAFETY: `ctx` and the string it points to live through the call (Windows copies it).
-    let h = unsafe { PowerCreateRequest(&ctx) };
-    if h.is_null() || h as isize == -1 {
-        tracing::warn!("wake: PowerCreateRequest failed");
-        return false;
-    }
-    // SAFETY: the request just made; closed if it can't be set.
-    if unsafe { PowerSetRequest(h, PowerRequestSystemRequired) } == 0 {
-        tracing::warn!("wake: PowerSetRequest failed");
-        unsafe { CloseHandle(h) };
-        return false;
-    }
-    *held = Some(h as isize);
-    true
 }
 
 /// Latin, Greek and Cyrillic text as Windows' classic controls draw it, in grey (#262, #323,

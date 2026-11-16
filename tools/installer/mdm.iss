@@ -4,7 +4,7 @@
 ;
 ; Install for the current user (no administrator rights, %LOCALAPPDATA%\Programs) or for
 ; everyone (Program Files); the wizard asks. Tasks: browser integration (native messaging host
-; for Chrome, Edge, Brave and Firefox), .torrent files and magnet links, start with Windows, a
+; for Microsoft Edge), .torrent files and magnet links, start with Windows, a
 ; desktop shortcut. A running MDM is asked to save and quit first (/exit). Uninstalling asks
 ; whether to keep the download list and settings; removing them also removes MDM's sign-ins from
 ; Windows Credential Manager (misterdownloadmanager --forget-sign-ins).
@@ -16,8 +16,7 @@
 #define AppExe "misterdownloadmanager.exe"
 #define HostExe "misterdownloadmanager-nmhost.exe"
 #define Root "..\.."
-; The processor (build.ps1 -Arch): x64, arm64 or x86, an installer each; and the folder its
-; programs were built in (target\<Rust's target>\release).
+; This fork publishes Windows x64 only.
 #ifndef Arch
   #define Arch "x64"
 #endif
@@ -32,9 +31,9 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=Ahmed Nefzaoui
-AppPublisherURL=https://github.com/anefzaoui/misterdownloadmanager
-AppSupportURL=https://github.com/anefzaoui/misterdownloadmanager/issues
-AppUpdatesURL=https://github.com/anefzaoui/misterdownloadmanager/releases
+AppPublisherURL=https://github.com/PrudhviBojanapu/misterdownloadmanager
+AppSupportURL=https://github.com/PrudhviBojanapu/misterdownloadmanager/issues
+AppUpdatesURL=https://github.com/PrudhviBojanapu/misterdownloadmanager/releases
 AppCopyright=Copyright (C) 2026 Ahmed Nefzaoui
 DefaultDirName={autopf}\{#AppName}
 DisableProgramGroupPage=yes
@@ -42,33 +41,15 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ; The Run entry is the installing user's, also when installing for everyone.
 UsedUserAreasWarning=no
-; One installer per processor, all with the same AppId: the ARM64 one run on a Windows on ARM PC
-; that has the x64 one replaces it in place. x64 runs on x64 Windows and, emulated, on Windows 11
-; on ARM; ARM64 on Windows on ARM only; the 32-bit one on 32-bit Windows only (x86os): on a 64-bit
-; one it would replace a per-user x64 copy (which would then update to the 32-bit files for good)
-; or add a second copy in Program Files (x86). There Setup refuses with its own message, which
-; names the processors it is for.
-#if Arch == "arm64"
-ArchitecturesAllowed=arm64
-ArchitecturesInstallIn64BitMode=arm64
-#elif Arch == "x86"
-ArchitecturesAllowed=x86os
-#else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-#endif
 MinVersion=10.0
 WizardStyle=modern
 SetupIconFile={#Root}\crates\app\assets\icons\app\mdm.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 OutputDir={#Root}\target\dist
-; x64's keeps the name it had before there were others: MDM's Update now looks for it by name.
-#if Arch == "x64"
 OutputBaseFilename=MisterDownloadManager-{#AppVersion}-setup
-#else
-OutputBaseFilename=MisterDownloadManager-{#AppVersion}-setup-{#Arch}
-#endif
 ; A 64 MB dictionary (#25): an 8 MB one (lzma2/max) only finds what repeats close by in the
 ; solid archive. A few MB smaller; building needs about 750 MB of memory, installing 64 MB.
 Compression=lzma2/ultra64
@@ -90,24 +71,16 @@ SignedUninstaller=yes
   #define SignFlag ""
 #endif
 
-; Every interface language (i18n/languages.tsv): tools/installer/languages.py writes the list and
-; the translations of the messages below. The wizard starts in Windows' display language.
-#include "languages.iss"
+[Languages]
+Name: "lang_en"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-lang_en.TaskBrowser=Set up &browser integration (Chrome, Edge, Brave, Firefox)
+lang_en.TaskBrowser=Set up &browser integration (Microsoft Edge)
 lang_en.TaskTorrents=Open .&torrent files and magnet links with {#AppName}
 lang_en.TaskStartup=Start {#AppName} when &Windows starts
 lang_en.TaskGroupOther=Other:
 lang_en.Launch=Start {#AppName}
 lang_en.KeepData=Also delete your download list and settings?%n%nYour downloaded files are not touched either way.
-
-; 32-bit Windows' setup run on 64-bit Windows (x86os above): which setup to take instead. Other
-; languages show Setup's own message, that this Windows isn't supported.
-#if Arch == "x86"
-[Messages]
-lang_en.WindowsVersionNotSupported=This is the setup for 32-bit Windows, and this computer runs 64-bit Windows. Download MisterDownloadManager-{#AppVersion}-setup.exe instead (or MisterDownloadManager-{#AppVersion}-setup-arm64.exe on a Windows on ARM PC).
-#endif
 
 [Tasks]
 Name: "browser"; Description: "{cm:TaskBrowser}"
@@ -120,12 +93,18 @@ Source: "{#Bin}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
 Source: "{#Bin}\{#HostExe}"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
 Source: "{#Bin}\misterdownloadmanager-cli.exe"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
 Source: "{#Bin}\misterdownloadmanager-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
-; The extension, for "Load unpacked" (Chromium) and about:debugging (Firefox) until it is in
-; the stores.
+; Microsoft Edge's "Load unpacked".
 Source: "{#Root}\target\extension\chromium\*"; DestDir: "{app}\extension\chromium"; Flags: ignoreversion recursesubdirs
-Source: "{#Root}\target\extension\mdm-firefox.xpi"; DestDir: "{app}\extension"; Flags: ignoreversion
 Source: "{#Root}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "{#Root}\ATTRIBUTION.md"; DestDir: "{app}"; DestName: "ATTRIBUTION.txt"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{app}\extension\mdm-firefox.xpi"
+Type: filesandordirs; Name: "{app}\extension\firefox"
+Type: filesandordirs; Name: "{app}\extension\safari"
+Type: filesandordirs; Name: "{app}\extension\chrome-store"
+; Remove translated extension payloads left by earlier installers before copying English.
+Type: filesandordirs; Name: "{app}\extension\chromium\_locales"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"

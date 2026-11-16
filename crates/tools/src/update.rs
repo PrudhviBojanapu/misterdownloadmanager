@@ -8,6 +8,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Error, signed_by_mdm, sum_for};
 
+/// This fork's repository (`owner/name`).
+pub const REPO_PATH: &str = "PrudhviBojanapu/misterdownloadmanager";
+/// This fork's release metadata; never query upstream for self-updates.
+pub const RELEASES_API: &str =
+    "https://api.github.com/repos/PrudhviBojanapu/misterdownloadmanager/releases/latest";
+/// Manual-update fallback when a release has no compatible or trusted update asset.
+pub const RELEASES_PAGE: &str = "https://github.com/PrudhviBojanapu/misterdownloadmanager/releases";
+
 /// How this copy of MDM was installed: what an update replaces, and how.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Install {
@@ -257,6 +265,17 @@ pub async fn fetch(
     net: &mdm_engine::Options,
     progress: &Progress,
 ) -> Result<PathBuf, Error> {
+    fetch_signed(assets, name, dir, net, progress, signed_by_mdm).await
+}
+
+async fn fetch_signed(
+    assets: &[(String, String)],
+    name: &str,
+    dir: &Path,
+    net: &mdm_engine::Options,
+    progress: &Progress,
+    verify: fn(&[u8], &[u8]) -> bool,
+) -> Result<PathBuf, Error> {
     let url = |file: &str| {
         assets
             .iter()
@@ -269,7 +288,7 @@ pub async fn fetch(
         &client,
         &url("SHA256SUMS.txt")?,
         &url("SHA256SUMS.txt.sig")?,
-        signed_by_mdm,
+        verify,
     )
     .await?;
     let expected =
@@ -434,10 +453,25 @@ Connection: close
         let dir = tempfile::tempdir().unwrap();
         // Through MDM's own engine, as the app fetches it.
         let net = crate::net(mdm_engine::Proxy::None);
+        // Historical upstream fixtures must not pass the fork's production trust root.
+        let err = fetch(&assets(&base), zip, dir.path(), &net, &Progress::default()).await;
+        assert!(matches!(err, Err(Error::BadSignature)), "{err:?}");
+        assert!(!dir.path().join(zip).exists());
+        // Keep testing the download/checksum pipeline with the fixture's own public key.
+        let fixture_key = |sums: &[u8], sig: &[u8]| {
+            crate::signed_by(include_str!("../keys/mdm-release.asc"), sums, sig)
+        };
         let progress = Progress::default();
-        let file = fetch(&assets(&base), zip, dir.path(), &net, &progress)
-            .await
-            .unwrap();
+        let file = fetch_signed(
+            &assets(&base),
+            zip,
+            dir.path(),
+            &net,
+            &progress,
+            fixture_key,
+        )
+        .await
+        .unwrap();
         let len = std::fs::metadata(&file).unwrap().len();
         assert_eq!(progress.got.load(Ordering::Relaxed), len);
         assert_eq!(progress.fraction(), Some(1.0));
@@ -448,12 +482,13 @@ Connection: close
             b"new program"
         );
         // A file that isn't the one the signed list names is refused, and not kept.
-        let err = fetch(
+        let err = fetch_signed(
             &assets(&base),
             setup,
             dir.path(),
             &net,
             &Progress::default(),
+            fixture_key,
         )
         .await;
         assert!(matches!(err, Err(Error::BadChecksum)), "{err:?}");
@@ -586,20 +621,28 @@ Connection: close
         }
     }
 
-    /// The Windows names are build.ps1's and mdm.iss's: x64's as before, the others with their
-    /// processor.
+    /// This fork packages x64 setup and portable only, while retaining legacy asset selectors.
     #[test]
     fn the_windows_names_are_build_ps1_s() {
         let script = include_str!("../../../tools/installer/build.ps1").replace("\r\n", "\n");
-        assert!(script.contains(
-            "\nNew-Zip \"MisterDownloadManager-$version-portable$suffix\" $true\nNew-Zip \"MisterDownloadManager-$version-$Arch\" $false\n"
-        ));
-        assert!(script.contains("$suffix = if ($Arch -eq \"x64\") { \"\" } else { \"-$Arch\" }"));
-        assert!(script.contains("[ValidateSet(\"x64\", \"arm64\", \"x86\")]"));
+        assert_eq!(
+            script
+                .lines()
+                .filter(|line| line.starts_with("New-Zip "))
+                .collect::<Vec<_>>(),
+            ["New-Zip \"MisterDownloadManager-$version-portable\""],
+            "only the portable application ZIP is packaged"
+        );
+        assert!(script.contains("[ValidateSet(\"x64\")]"));
+        assert!(script.contains("$target = \"x86_64-pc-windows-msvc\""));
         let iss = include_str!("../../../tools/installer/mdm.iss").replace("\r\n", "\n");
-        assert!(iss.contains(
-            "#if Arch == \"x64\"\nOutputBaseFilename=MisterDownloadManager-{#AppVersion}-setup\n#else\nOutputBaseFilename=MisterDownloadManager-{#AppVersion}-setup-{#Arch}\n#endif"
-        ));
+        assert_eq!(
+            iss.lines()
+                .filter(|line| line.starts_with("OutputBaseFilename="))
+                .collect::<Vec<_>>(),
+            ["OutputBaseFilename=MisterDownloadManager-{#AppVersion}-setup"]
+        );
+        // Historical selectors must still distinguish each installation kind and processor.
         for arch in [Arch::X64, Arch::Arm64, Arch::X86] {
             let (a, suffix) = match arch {
                 Arch::X64 => ("x64", String::new()),

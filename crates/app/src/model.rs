@@ -500,6 +500,10 @@ pub struct Item {
     /// once complete.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replace_file: Option<PathBuf>,
+    /// Added by automation with `no_complete_dialog`: this download never opens Download
+    /// complete, whatever Options says for other downloads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet_complete: bool,
     /// The Link grabber package it came in (#37): its archives are extracted together once
     /// every volume is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1191,6 +1195,7 @@ impl Item {
             name_from_url: false,
             number_at_start: false,
             replace_file: None,
+            quiet_complete: false,
             package: None,
             group: None,
             server: None,

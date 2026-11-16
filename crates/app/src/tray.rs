@@ -34,7 +34,6 @@ pub enum TrayCmd {
     BatchClipboard,
     LimiterOn,
     LimiterOff,
-    Scheduler,
     StartQueue,
     StopQueue,
     Options,
@@ -476,8 +475,6 @@ impl Native {
         limiter_menu.append(&limiter_on).ok();
         limiter_menu.append(&limiter_off).ok();
         menu.append(&limiter_menu).ok();
-        // i18n: noun: opens the Scheduler (the tool that starts queues on time)
-        add(&menu, mark("Scheduler"), TrayCmd::Scheduler);
         let start_queue = add(
             &menu,
             mark("Start main download queue"),

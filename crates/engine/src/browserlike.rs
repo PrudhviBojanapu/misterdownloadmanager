@@ -367,6 +367,15 @@ mod imp {
                 route,
                 Some(opts.connect_timeout),
             ))));
+        if !opts.browser_cookies.is_empty() {
+            let jar = Arc::new(wreq::cookie::Jar::default());
+            for cookie in &opts.browser_cookies {
+                if let Some((cookie_url, value)) = crate::download::browser_cookie_seed(cookie) {
+                    jar.add(value.as_str(), cookie_url.as_str());
+                }
+            }
+            b = b.cookie_provider(jar);
+        }
         b = match proxy {
             Some(p) => b.proxy(p),
             None => b.no_proxy(),

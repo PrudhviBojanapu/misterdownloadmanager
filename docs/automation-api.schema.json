@@ -42,6 +42,86 @@
       },
       "type": "object"
     },
+    "AddDownload": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checksum": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cookie": {
+          "default": null,
+          "description": "A Cookie header for the download's requests (`name=value; other=value`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duplicate": {
+          "$ref": "#/$defs/DuplicatePolicy",
+          "default": "skip"
+        },
+        "file_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "folder": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "later": {
+          "default": false,
+          "type": "boolean"
+        },
+        "no_complete_dialog": {
+          "default": false,
+          "description": "Never open Download complete for this download; other downloads follow Options.",
+          "type": "boolean"
+        },
+        "private": {
+          "default": false,
+          "description": "Keep it out of the saved list (as a private browser window's download).",
+          "type": "boolean"
+        },
+        "queue": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "referer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "user_agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
     "ApiAnswer": {
       "description": "`{\"api\": true}` / `{\"api\": false}`: the API's new state.",
       "properties": {
@@ -191,6 +271,30 @@
       ],
       "type": "object"
     },
+    "DuplicatePolicy": {
+      "oneOf": [
+        {
+          "const": "skip",
+          "description": "Return the existing id, without changing or restarting it.",
+          "type": "string"
+        },
+        {
+          "const": "add",
+          "description": "Make a second entry with a numbered destination.",
+          "type": "string"
+        },
+        {
+          "const": "replace",
+          "description": "Stage an HTTP-file replacement; preserve the original until the replacement succeeds.",
+          "type": "string"
+        },
+        {
+          "const": "resume",
+          "description": "Resume the existing entry if it can be started.",
+          "type": "string"
+        }
+      ]
+    },
     "ErrorAnswer": {
       "description": "An unknown question or action, or a question while the API is off.",
       "properties": {
@@ -210,6 +314,14 @@
         "error"
       ],
       "type": "object"
+    },
+    "Helper": {
+      "enum": [
+        "ytdlp",
+        "ffmpeg",
+        "gallery_dl"
+      ],
+      "type": "string"
     },
     "LinksPart": {
       "description": "One part of a page's links ([`Command::links_part`]): the browser's extension sends a list\nlonger than the native host takes at once ([`MAX_MESSAGE`]) in parts, each with the page's\nreferrer and cookies, and the app puts them back together into one list.",
@@ -284,6 +396,968 @@
       ],
       "type": "object"
     },
+    "MediaKind": {
+      "enum": [
+        "video",
+        "gallery"
+      ],
+      "type": "string"
+    },
+    "Operation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "download": {
+              "$ref": "#/$defs/AddDownload"
+            },
+            "op": {
+              "const": "add",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "download"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "properties",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "set_properties",
+              "type": "string"
+            },
+            "patch": {
+              "$ref": "#/$defs/PropertyPatch"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "patch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "ids": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "op": {
+              "const": "retry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "ids"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "ids": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "op": {
+              "const": "move",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "ids",
+            "folder"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "op": {
+              "const": "rename",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "settings",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "set_settings",
+              "type": "string"
+            },
+            "patch": {
+              "$ref": "#/$defs/SettingsPatch"
+            }
+          },
+          "required": [
+            "op",
+            "patch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "categories",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "None creates a category; an existing key updates it. Empty folder restores its default.",
+          "properties": {
+            "folder": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "op": {
+              "const": "set_category",
+              "type": "string"
+            },
+            "types": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "name",
+            "types"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "op": {
+              "const": "delete_category",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "queues",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "None creates a basic queue; an existing name updates it.",
+          "properties": {
+            "files_at_once": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "op": {
+              "const": "set_queue",
+              "type": "string"
+            },
+            "queue": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "name",
+            "files_at_once"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "delete_queue",
+              "type": "string"
+            },
+            "queue": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "queue"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Replace the membership/order atomically; downloads must already exist.",
+          "properties": {
+            "ids": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "op": {
+              "const": "queue_items",
+              "type": "string"
+            },
+            "queue": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "queue",
+            "ids"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "start_queue",
+              "type": "string"
+            },
+            "queue": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "queue"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "stop_queue",
+              "type": "string"
+            },
+            "queue": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "queue"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Write-only TorBox API key. None creates an account; empty key removes the account.",
+          "properties": {
+            "api_key": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "torbox",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "api_key",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "accounts",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "remote_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "pair",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "stop_pairing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "revoke_device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Async video quality discovery; poll with video_poll.",
+          "properties": {
+            "op": {
+              "const": "video_lookup",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "video_poll",
+              "type": "string"
+            },
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "token"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Add one quality from video_lookup's menu without requiring its internal selector.",
+          "properties": {
+            "choice": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "download": {
+              "$ref": "#/$defs/AddDownload"
+            },
+            "op": {
+              "const": "video_pick",
+              "type": "string"
+            },
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "token",
+            "choice",
+            "download"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Starts a GUI-list video/gallery download; selector is yt-dlp syntax.",
+          "properties": {
+            "download": {
+              "$ref": "#/$defs/AddDownload"
+            },
+            "kind": {
+              "$ref": "#/$defs/MediaKind"
+            },
+            "limit": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "media_add",
+              "type": "string"
+            },
+            "selector": {
+              "default": "",
+              "type": "string"
+            },
+            "subtitles": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Subtitles"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "op",
+            "kind",
+            "download"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Async bounded listing; poll job, then add selected entries with playlist_add.",
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "from": {
+              "default": 1,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "playlist_lookup",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "torrent_lookup",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Inspect a lookup's progress, files/entries or error. Jobs expire after ten minutes.",
+          "properties": {
+            "job": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "job",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "job"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "indices": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "job": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "later": {
+              "default": false,
+              "type": "boolean"
+            },
+            "op": {
+              "const": "playlist_add",
+              "type": "string"
+            },
+            "selector": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "job",
+            "folder",
+            "selector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "files": {
+              "items": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "folder": {
+              "type": "string"
+            },
+            "in_order": {
+              "default": false,
+              "type": "boolean"
+            },
+            "job": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "later": {
+              "default": false,
+              "type": "boolean"
+            },
+            "op": {
+              "const": "torrent_add",
+              "type": "string"
+            },
+            "queue": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "use_existing": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "op",
+            "job",
+            "folder"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "torrent_recheck",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "torrent_reannounce",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "torrent_trackers",
+              "type": "string"
+            },
+            "trackers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "trackers"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_order": {
+              "type": "boolean"
+            },
+            "op": {
+              "const": "torrent_order",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "in_order"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "torrent_files",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "files": {
+              "items": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "torrent_choose_files",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "files"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "helpers",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "helper": {
+              "$ref": "#/$defs/Helper"
+            },
+            "op": {
+              "const": "install_helper",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "helper"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Validate and select a custom executable; null restores MDM's default helper.",
+          "properties": {
+            "helper": {
+              "$ref": "#/$defs/Helper"
+            },
+            "op": {
+              "const": "choose_helper",
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "helper"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Hash a completed local file in the background. Omitted expected uses its saved checksum.",
+          "properties": {
+            "expected": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "verify_checksum",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Create a torrent asynchronously, without overwriting an existing output.",
+          "properties": {
+            "op": {
+              "const": "torrent_create",
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "path",
+            "output"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "PairAnswer": {
       "description": "`{\"pair\": true}` (#157): a new pairing code for the remote control, while it is on.",
       "properties": {
@@ -314,6 +1388,84 @@
         "urls",
         "qr"
       ],
+      "type": "object"
+    },
+    "PropertyPatch": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checksum": {
+          "default": null,
+          "description": "Hex MD5/SHA-1/SHA-256/SHA-512/CRC32; empty clears. Applied to the next start.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direct": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "login": {
+          "default": null,
+          "description": "Empty username clears the login. Never returned on reads.",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "referer": {
+          "default": null,
+          "description": "Empty clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "speed_limit": {
+          "default": null,
+          "description": "Remembered bytes/second limit; zero clears it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "QueueInfo": {
@@ -474,6 +1626,17 @@
             "string",
             "null"
           ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Operation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Typed non-interactive automation. Never opens a modal dialog."
         },
         "origin": {
           "description": "From the browser (#900): the `Origin` its page's player sent with a video's stream or\nfile (`video_page`, `video_lookup`), sent again with it, its playlists and each of its\npieces, as a site's video server may serve its own pages' players only.",
@@ -693,6 +1856,593 @@
       ],
       "type": "object"
     },
+    "SettingsPatch": {
+      "additionalProperties": false,
+      "properties": {
+        "advanced_integration": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "auto_types": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "browsers": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "type": "array"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "capture_min_kb": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "capture_opened": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "change_folder_on_last": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "close_to_tray": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "confirm_delete": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "conn_exceptions": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "debrid_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "debrid_torrents": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "delete_files_too": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dns_doh_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dns_fallback": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dns_mode": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dns_nextdns_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dns_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dns_servers": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dns_tls_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "double_click_open": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "duplicate_action": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "excluded_addresses": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "excluded_sites": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global_limit_kb": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "global_limit_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "global_only_active": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "grabber_check": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "grabber_hide_pages": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ignore_mtime": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "launch_on_startup": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limiter_on_startup": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "many_connections": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mark_downloads": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_connections": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minimize_to_tray": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "net_adapter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "only_add_to_queue": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "proxy_from_browser": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "proxy_host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proxy_http": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "proxy_https": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "proxy_mode": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "proxy_password": {
+          "description": "Write only. Omitted on reads; an empty string clears the password.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proxy_port": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proxy_script": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proxy_user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue_panel_batch": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "queue_panel_later": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "remote_listen": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "remote_port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "set_creation_date": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "show_complete": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "show_progress": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "show_start_dialog": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "site_logins": {
+          "description": "Write only. Replaces site credentials; [] clears them.",
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "speed_limit_kb": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "speed_limit_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "start_immediately": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_associations": {
+          "description": "Register/unregister torrent handlers without opening OS default-app dialogs.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_blocklist": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "torrent_dht": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_incoming": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_keep_sharing": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_lsd": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "torrent_proxy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_stop_idle": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_stop_minutes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "torrent_stop_minutes_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_stop_ratio": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "torrent_stop_ratio_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_upload_kb": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "torrent_upload_on": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "torrent_upnp": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "update_check": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "user_agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_chapters": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "video_cookies": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_cookies_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_panel": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "video_panel_sites": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_subtitles": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Subtitles"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Skipped": {
       "properties": {
         "id": {
@@ -709,6 +2459,27 @@
         "id",
         "why"
       ],
+      "type": "object"
+    },
+    "Subtitles": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic": {
+          "default": false,
+          "type": "boolean"
+        },
+        "embed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "langs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "VideoChoice": {

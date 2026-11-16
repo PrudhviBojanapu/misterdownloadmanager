@@ -1450,6 +1450,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+dependencies = [
+ "percent-encoding",
+ "time",
+ "version_check",
+]
+
+[[package]]
+name = "cookie_store"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b2c103cf610ec6cae3da84a766285b42fd16aad564758459e6ecf128c75206"
+dependencies = [
+ "cookie",
+ "document-features",
+ "idna",
+ "log",
+ "publicsuffix",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4565,12 +4594,10 @@ dependencies = [
 
 [[package]]
 name = "mdm-app"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "arboard",
  "base64 0.23.1",
- "brotli 9.1.1",
- "brotli-decompressor 6.3.1",
  "chrono",
  "craft-atomic",
  "craft-i18n",
@@ -4584,12 +4611,9 @@ dependencies = [
  "image",
  "libc",
  "mdm-cli",
- "mdm-cnl",
  "mdm-crash",
  "mdm-debrid",
  "mdm-engine",
- "mdm-extract",
- "mdm-geo",
  "mdm-ipc",
  "mdm-labserver",
  "mdm-remote",
@@ -4605,7 +4629,6 @@ dependencies = [
  "regex",
  "reqwest 0.13.5",
  "rfd",
- "roxmltree 0.20.0",
  "security-framework",
  "serde",
  "serde_json",
@@ -4631,7 +4654,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-cli"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -4650,7 +4673,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-cnl"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "aes",
  "axum",
@@ -4663,7 +4686,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-crash"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "breakpad-symbols",
  "chrono",
@@ -4688,7 +4711,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-debrid"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "bytes",
  "chrono",
@@ -4708,7 +4731,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-engine"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4758,7 +4781,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-extract"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "flate2",
  "lzma-rust2",
@@ -4771,7 +4794,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-geo"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "lzma-rust2",
  "png 0.18.1",
@@ -4780,7 +4803,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-ipc"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "craft-atomic",
  "dirs 7.0.0",
@@ -4792,7 +4815,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-labserver"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -4821,7 +4844,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-mcp"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "mdm-ipc",
  "rmcp",
@@ -4835,7 +4858,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-nmhost"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "chrono",
  "mdm-ipc",
@@ -4846,7 +4869,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-remote"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -4867,7 +4890,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-tools"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -4896,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-torrent"
-version = "0.5.2"
+version = "0.5.7"
 dependencies = [
  "anyhow",
  "flate2",
@@ -6548,6 +6571,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
+name = "publicsuffix"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
+dependencies = [
+ "idna",
+ "psl-types",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7003,6 +7042,8 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "cookie",
+ "cookie_store",
  "futures-core",
  "futures-util",
  "http",
@@ -8038,9 +8079,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suppaftp"
-version = "12.2.1"
+version = "12.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b58fcf921745cca6f0127c9f822069947da8c6dbeff52e9004750bcc448171f"
+checksum = "5194aa1ffcbd7d68a421ec66a26a773d9737154911b4685232d0bf0b7a94f707"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9890,6 +9931,7 @@ dependencies = [
  "btls",
  "btls-sys",
  "bytes",
+ "cookie",
  "futures-util",
  "http",
  "http-body",

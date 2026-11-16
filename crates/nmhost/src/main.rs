@@ -57,15 +57,9 @@ mod win32;
 use mdm_ipc::browsers::HOST_NAME;
 #[cfg(windows)]
 use mdm_ipc::browsers::{Family, Holder, Repair, WINDOWS_HOST_KEYS};
-use mdm_ipc::extension::{FIREFOX_ID, STORE_ID, chromium_ids, store_id};
-
-/// Chrome's external extensions: an entry naming the store's extension makes Chrome offer it at
-/// its next start ("New extension added"), the user turning it on there. HKLM's is read from the
-/// 32-bit view on 64-bit Windows, hence /reg:32 (HKCU has one view). Helium reads it too, but
-/// asks Google's address without the browser's version, and Google answers "no update": nothing
-/// is offered there (#685), the app's window opens the store's page in Helium instead.
-#[cfg(windows)]
-const CHROME_EXTERNAL_KEY: &str = r"Software\Google\Chrome\Extensions";
+#[cfg(not(windows))]
+use mdm_ipc::extension::store_id;
+use mdm_ipc::extension::{FIREFOX_ID, STORE_ID, chromium_ids};
 
 /// A message from the extension.
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -1289,36 +1283,64 @@ fn reg_point(root: &str, key: &str, manifest: &std::path::Path) -> Result<(), St
     ])
 }
 
+#[cfg(windows)]
+fn legacy_manifest_is_ours(value: &str, dir: &std::path::Path) -> bool {
+    let path = mdm_ipc::browsers::registered_manifest(value);
+    [
+        format!("{HOST_NAME}.json"),
+        format!("{HOST_NAME}.firefox.json"),
+    ]
+    .iter()
+    .any(|name| {
+        path.to_string_lossy()
+            .eq_ignore_ascii_case(&dir.join(name).to_string_lossy())
+    })
+}
+
+/// Remove only unsupported registrations owned by this installation, not another copy's.
+#[cfg(windows)]
+fn forget_legacy_hosts(all_users: bool) -> Result<(), String> {
+    let root = if all_users { "HKLM" } else { "HKCU" };
+    let dir = exe_dir()?;
+    for key in [
+        r"Software\Google\Chrome\NativeMessagingHosts",
+        r"Software\Chromium\NativeMessagingHosts",
+        r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts",
+        r"Software\Mozilla\NativeMessagingHosts",
+    ] {
+        let entry = format!(r"{key}\{HOST_NAME}");
+        if win32::reg_string(all_users, &entry)
+            .is_some_and(|value| legacy_manifest_is_ours(&value, &dir))
+        {
+            reg(&["delete", &format!(r"{root}\{entry}"), "/f"])?;
+            if key == r"Software\Google\Chrome\NativeMessagingHosts" {
+                let _ = reg(&[
+                    "delete",
+                    &format!(r"{root}\Software\Google\Chrome\Extensions\{STORE_ID}"),
+                    "/f",
+                    "/reg:32",
+                ]);
+            }
+        }
+    }
+    let _ = std::fs::remove_file(dir.join(format!("{HOST_NAME}.firefox.json")));
+    Ok(())
+}
+
 /// Windows: the manifests beside this exe, and the registry entries naming them, per user
 /// (HKCU) or for everyone (HKLM).
 #[cfg(windows)]
 fn register(all_users: bool) -> Result<(), String> {
     portable_refused()?;
     temporary_refused()?;
+    forget_legacy_hosts(all_users)?;
     let root = if all_users { "HKLM" } else { "HKCU" };
     for (key, family) in WINDOWS_HOST_KEYS {
         reg_point(root, key, &own_manifest(family)?)?;
     }
-    // Chrome offers the store's extension once it is listed (never a placeholder ID).
-    if let Some(id) = store_id() {
-        reg(&[
-            "add",
-            &format!(r"{root}\{CHROME_EXTERNAL_KEY}\{id}"),
-            "/v",
-            "update_url",
-            "/t",
-            "REG_SZ",
-            "/d",
-            mdm_ipc::extension::STORE_UPDATE_URL,
-            "/f",
-            "/reg:32",
-        ])?;
-    }
     println!(
-        "registered {HOST_NAME} for Chrome, Edge, Brave, Helium and the other Chromium browsers \
-         ({}), and for Firefox, Zen and its other forks ({})",
+        "registered {HOST_NAME} for Microsoft Edge ({})",
         own_manifest(Family::Chromium)?.display(),
-        own_manifest(Family::Gecko)?.display()
     );
     Ok(())
 }
@@ -1331,6 +1353,7 @@ fn register(all_users: bool) -> Result<(), String> {
 fn repair() -> Result<(), String> {
     portable_refused()?;
     temporary_refused()?;
+    forget_legacy_hosts(false)?;
     let holder = |machine: bool, entry: &str| {
         win32::reg_string(machine, entry)
             .map(|v| Holder::of(&mdm_ipc::browsers::registered_manifest(&v)))
@@ -1361,16 +1384,11 @@ fn repair() -> Result<(), String> {
 
 #[cfg(windows)]
 fn unregister(all_users: bool) -> Result<(), String> {
+    forget_legacy_hosts(all_users)?;
     let root = if all_users { "HKLM" } else { "HKCU" };
     for (key, _) in WINDOWS_HOST_KEYS {
         let _ = reg(&["delete", &format!(r"{root}\{key}\{HOST_NAME}"), "/f"]);
     }
-    let _ = reg(&[
-        "delete",
-        &format!(r"{root}\{CHROME_EXTERNAL_KEY}\{STORE_ID}"),
-        "/f",
-        "/reg:32",
-    ]);
     let _ = std::fs::remove_file(exe_dir()?.join(format!("{HOST_NAME}.json")));
     let _ = std::fs::remove_file(exe_dir()?.join(format!("{HOST_NAME}.firefox.json")));
     println!("unregistered {HOST_NAME}");
@@ -1626,6 +1644,25 @@ fn downloadable(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_registration_cleanup_preserves_other_installations() {
+        let dir = std::path::Path::new(r"C:\Apps\MDM");
+        assert!(legacy_manifest_is_ours(
+            r#" "c:\apps\mdm\com.misterdownloadmanager.host.json" "#,
+            dir,
+        ));
+        assert!(legacy_manifest_is_ours(
+            r"C:\Apps\MDM\com.misterdownloadmanager.host.firefox.json",
+            dir,
+        ));
+        assert!(!legacy_manifest_is_ours(
+            r"C:\OtherMDM\com.misterdownloadmanager.host.json",
+            dir,
+        ));
+        assert!(!legacy_manifest_is_ours(r"C:\Apps\MDM\other.json", dir));
+    }
 
     /// Safari's copy of the helper, inside the app's extension, finds the app it opens.
     #[test]

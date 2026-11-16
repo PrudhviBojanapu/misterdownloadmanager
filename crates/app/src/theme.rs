@@ -75,38 +75,12 @@ pub fn set(theme: Theme) {
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
-/// Makes the theme with this id the active one: a built-in, or a file in the themes folder
-/// (`themefile`), or a theme file's path; Native is made from what the system says. A theme
-/// that can't be read leaves the classic look, logged. Returns what was skipped or went wrong.
-pub fn select(id: &str, ctx: &egui::Context) -> Vec<String> {
-    let id = id.to_owned();
-    // pywal's file is followed again only if this theme is made from it (`themefile::load_in`).
-    crate::themefile::forget_pywal();
-    *SELECTED.lock().unwrap_or_else(|e| e.into_inner()) = id.clone();
-    if id.is_empty() || id == CLASSIC.id {
-        set(CLASSIC.clone());
-        return Vec::new();
-    }
-    if id == "native" {
-        let system = crate::native::system(ctx);
-        *NATIVE_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(system);
-        set(crate::native::theme(&system));
-        return Vec::new();
-    }
-    match load(&id) {
-        Ok(loaded) => {
-            for w in &loaded.warnings {
-                tracing::warn!("theme {id}: {w}");
-            }
-            set(loaded.theme);
-            loaded.warnings
-        }
-        Err(e) => {
-            tracing::warn!("theme {id}: {e}; the classic look instead");
-            set(CLASSIC.clone());
-            vec![e]
-        }
-    }
+/// Apply the fork's Metro dark appearance, including when migrating an older preference.
+pub fn select(_id: &str, _ctx: &egui::Context) -> Vec<String> {
+    *SELECTED.lock().unwrap_or_else(|e| e.into_inner()) = "metro".into();
+    DARK.store(true, Ordering::Relaxed);
+    set(crate::palette::builtins()[0].clone());
+    Vec::new()
 }
 
 /// A theme file's theme, by its id or its path; pywal's file followed from now on when the
@@ -1931,8 +1905,8 @@ mod status_width_tests {
             super::fc_font("sans-serif").map(|(f, _)| f)
         );
         let mut widest = (0.0f32, String::new());
-        for code in ["en", "de", "fr", "ru", "ar"] {
-            let lang = i18n.from_code(code).expect("a catalog");
+        for lang in i18n.languages() {
+            let code = i18n.code(lang);
             let full = craft_i18n::Format::from_tag(code).percent(1.0, 0);
             for zoom in [1.0, 1.5] {
                 let ctx = egui::Context::default();

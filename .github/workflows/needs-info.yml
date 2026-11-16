@@ -22,7 +22,7 @@ permissions: {}
 
 jobs:
   close-unanswered:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.repository == 'anefzaoui/misterdownloadmanager' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       issues: write # comment on and close the unanswered issues
@@ -84,6 +84,7 @@ jobs:
   reporter-answered:
     # Comments made with this workflow's token start no run, so its own note never counts.
     if: >-
+      github.repository == 'anefzaoui/misterdownloadmanager' &&
       github.event_name == 'issue_comment' &&
       !github.event.issue.pull_request &&
       github.event.comment.user.login == github.event.issue.user.login

@@ -139,7 +139,7 @@ fn load_from(p: &Path, empty: Loaded) -> Loaded {
                 }
             }
             let mut settings = f.settings;
-            settings.list_known_browsers();
+            settings.normalize_build();
             // An earlier version's default File types, untouched, become today's (#208); a list
             // the user edited stays as it is.
             if let Some(types) = mdm_ipc::capture::upgraded_types(&settings.auto_types) {
@@ -445,7 +445,7 @@ mod tests {
             while *held {
                 held = cv.wait(held).unwrap();
             }
-            crate::rss::write(p, bytes)
+            std::fs::write(p, bytes)
         }
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("rss.json");

@@ -5,6 +5,7 @@
 //! Only connections from 127.0.0.1 with the right token are accepted.
 
 pub mod api;
+pub mod automation;
 pub mod browsers;
 pub mod capture;
 pub mod extension;
@@ -21,6 +22,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Command {
+    /// Typed non-interactive automation. Never opens a modal dialog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<automation::Operation>,
     /// The URL to download (`/d`).
     pub url: Option<String>,
     /// Save folder (`/p`) and file name (`/f`).
@@ -203,7 +207,7 @@ impl LinksPart {
 
 /// One cookie as the browser keeps it (`cookies.getAll`'s fields, under the extension's names
 /// too: `hostOnly`, `expirationDate`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct BrowserCookie {
     pub name: String,
@@ -219,6 +223,20 @@ pub struct BrowserCookie {
     /// When it expires, in seconds since 1970; none: when the browser closes.
     #[serde(alias = "expirationDate")]
     pub expires: Option<f64>,
+}
+
+impl std::fmt::Debug for BrowserCookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserCookie")
+            .field("name", &self.name)
+            .field("value", &"[REDACTED]")
+            .field("domain", &self.domain)
+            .field("host_only", &self.host_only)
+            .field("path", &self.path)
+            .field("secure", &self.secure)
+            .field("expires", &self.expires)
+            .finish()
+    }
 }
 
 /// The video the browser's quality menu asks about ([`Command::video_lookup`]).
@@ -251,7 +269,8 @@ pub struct VideoPick {
 impl Command {
     /// Asks for an answer (a JSON line) rather than "ok".
     pub fn wants_reply(&self) -> bool {
-        self.query.is_some()
+        self.operation.is_some()
+            || self.query.is_some()
             || self.api.is_some()
             || self.action.is_some()
             || self.pair

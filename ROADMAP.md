@@ -10,9 +10,9 @@ issue, where the details and the discussion are. Released changes are in
 
 ## Fork maintenance
 
-- ✅ Windows x64 releases built on standard GitHub-hosted runners: installer, portable and plain
-  ZIPs, regression/extension/download checks, SHA-256 checksums and automatic publication on this
-  fork's Releases page; also runnable by hand.
+- ✅ Upstream's release pipeline restricted to Windows x64 on standard GitHub-hosted runners:
+  workspace/extension/download checks, installer and ZIPs, crash symbols, checksums, build
+  provenance and changelog notes. Version tags publish releases; manual runs only keep artifacts.
 
 ## Version 0.5.0
 

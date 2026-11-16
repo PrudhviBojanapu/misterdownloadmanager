@@ -368,20 +368,25 @@ working, not a copy of anyone's software.
 
 ### Windows releases of this fork
 
-In `PrudhviBojanapu/misterdownloadmanager`, **Windows release** builds Windows x64 on every
-push to `main`, or from **Actions -> Windows release -> Run workflow** on `main`. It runs the
-window/duplicate regression tests, extension checks and a real download smoke test, then publishes
-the installer, portable ZIP, plain ZIP and SHA-256 checksums on this fork's **Releases** page.
-Each build gets a unique `windows-v<version>-<run>.<attempt>` tag; it does not run the inherited
-multi-platform release workflow or publish extensions to any store. Before enabling it, disable
-the inherited workflows in this fork's Actions settings; their source files are kept for upstream
-syncs.
+In `PrudhviBojanapu/misterdownloadmanager`, **Windows release** follows upstream's release process,
+restricted to Windows x64. A pushed `vX.Y.Z` tag must match `Cargo.toml` and publishes a release;
+**Actions -> Windows release -> Run workflow** only builds downloadable artifacts, as upstream does.
+It refreshes the IP-to-country data, runs the workspace and extension tests, builds the installer,
+portable ZIP and plain ZIP with upstream's packaging script, smoke-tests a real download, and
+generates crash symbols. Releases include the browser extension packages, SHA-256 checksums,
+build provenance and notes from `CHANGELOG.md`.
 
-The workflow uses standard `windows-2022` GitHub-hosted runners, free for public repositories.
+The workflow uses standard `windows-latest` GitHub-hosted runners, free for public repositories.
 Runtime and concurrency limits still apply; larger runners are not free. Build dependencies are
 cached, and temporary Actions artifacts expire after one day; published release assets remain.
-These fork builds are unsigned, and the in-app updater still points to upstream releases:
-install updates from this fork manually to keep its changes.
+The inherited workflows are disabled in this fork's Actions settings, with their source files
+kept for upstream syncs. No Linux, macOS, ARM64 or x86 app builds, browser-store publication or
+upstream website deployment run here.
+
+Upstream's optional `CODESIGN_PFX_BASE64`/`CODESIGN_PASSWORD` and `MDM_RELEASE_KEY` secrets are
+supported, but its private signing keys are not available to this fork. Without them the builds
+are unsigned. The in-app updater still points to upstream releases: install updates from this
+fork manually to keep its changes.
 
 <details>
 <summary><b>Build from source</b></summary>

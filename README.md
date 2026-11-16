@@ -366,6 +366,22 @@ working, not a copy of anyone's software.
 
 ## For developers
 
+### Windows releases of this fork
+
+In `PrudhviBojanapu/misterdownloadmanager`, **Windows release** builds Windows x64 on every
+push to `main`, or from **Actions -> Windows release -> Run workflow** on `main`. It runs the
+window/duplicate regression tests, extension checks and a real download smoke test, then publishes
+the installer, portable ZIP, plain ZIP and SHA-256 checksums on this fork's **Releases** page.
+Each build gets a unique `windows-v<version>-<run>.<attempt>` tag; it does not run the inherited
+multi-platform release workflow or publish extensions to any store. The inherited workflows
+are disabled in this fork's Actions settings, not removed from the source.
+
+The workflow uses standard `windows-2022` GitHub-hosted runners, free for public repositories.
+Runtime and concurrency limits still apply; larger runners are not free. Build dependencies are
+cached, and temporary Actions artifacts expire after one day; published release assets remain.
+These fork builds are unsigned, and the in-app updater still points to upstream releases:
+install updates from this fork manually to keep its changes.
+
 <details>
 <summary><b>Build from source</b></summary>
 

@@ -1,0 +1,184 @@
+name: Windows release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  MDM_TARGET: x86_64-pc-windows-msvc
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    if: github.repository == 'PrudhviBojanapu/misterdownloadmanager' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.toolchain.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Toolchain and build metadata
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE) { throw "Rust toolchain installation failed" }
+          rustup target add $env:MDM_TARGET
+          if ($LASTEXITCODE) { throw "Rust target installation failed" }
+          $rust = rustc --version
+          if ($LASTEXITCODE) { throw "rustc failed" }
+          "rust=$rust" >> $env:GITHUB_OUTPUT
+          $version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([0-9.]+)"').Groups[1].Value
+          if (-not $version) { throw "No version in Cargo.toml" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          $flags = "--remap-path-prefix=$env:USERPROFILE\.cargo=cargo" + [char]0x1f +
+            "--remap-path-prefix=$env:GITHUB_WORKSPACE=mdm" + [char]0x1f + "-Ctarget-feature=+crt-static"
+          "CARGO_ENCODED_RUSTFLAGS=$flags" >> $env:GITHUB_ENV
+          "MDM_OFFSCREEN=1" >> $env:GITHUB_ENV
+          "MDM_DATA_DIR=$env:RUNNER_TEMP\mdm-tests" >> $env:GITHUB_ENV
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+            target/x86_64-pc-windows-msvc/release
+          key: windows-x64-release-${{ steps.toolchain.outputs.rust }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: |
+            windows-x64-release-${{ steps.toolchain.outputs.rust }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+            windows-x64-release-${{ steps.toolchain.outputs.rust }}-
+
+      - name: Native build tools
+        run: |
+          if (-not (Test-Path "C:\Program Files\NASM\nasm.exe")) {
+            choco install nasm --version 2.16.3 --no-progress -y
+            if ($LASTEXITCODE) { throw "NASM installation failed" }
+          }
+          "C:\Program Files\NASM" >> $env:GITHUB_PATH
+          if (-not (Test-Path "C:\Program Files\LLVM\bin\libclang.dll")) {
+            choco install llvm --no-progress -y
+            if ($LASTEXITCODE) { throw "LLVM installation failed" }
+          }
+          "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          cmake --version
+          if ($LASTEXITCODE) { throw "CMake is unavailable" }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE) { throw "Inno Setup installation failed" }
+          }
+
+      - name: Fetch locked dependencies
+        run: |
+          cargo fetch --locked --target $env:MDM_TARGET
+          if ($LASTEXITCODE) { throw "Dependency fetch failed" }
+
+      - name: Focused regression tests
+        run: |
+          foreach ($filter in "filecollision::tests::", "dialogs::tests::", "app::duplicate_tests::",
+            "win32::frame_tests::", "progress::tests::") {
+            cargo test --locked --release --target $env:MDM_TARGET -p mdm-app --bin misterdownloadmanager $filter
+            if ($LASTEXITCODE) { throw "Regression tests failed: $filter" }
+          }
+
+      - name: Browser extension tests
+        run: |
+          node tools\extension\test.mjs
+          if ($LASTEXITCODE) { throw "Browser extension tests failed" }
+
+      - name: Build installer and ZIPs
+        run: |
+          & .\tools\installer\build.ps1 -Arch x64
+          git diff --exit-code -- Cargo.lock
+          if ($LASTEXITCODE) { throw "Build changed Cargo.lock" }
+          node tools\extension\check-pack.mjs
+          if ($LASTEXITCODE) { throw "Browser extension packages are invalid" }
+
+      - name: Download smoke test
+        run: |
+          python tools\installer\smoke.py "target\$env:MDM_TARGET\release" x64
+          if ($LASTEXITCODE) { throw "Release smoke test failed" }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-x64
+          path: target/dist/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-x64
+          path: dist
+
+      - name: Verify and publish Windows release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MDM_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $expected = @("MisterDownloadManager-$env:MDM_VERSION-setup.exe",
+            "MisterDownloadManager-$env:MDM_VERSION-portable.zip",
+            "MisterDownloadManager-$env:MDM_VERSION-x64.zip")
+          $checksums = @(Get-Content dist\SHA256SUMS.txt)
+          if ($checksums.Count -ne $expected.Count) { throw "Unexpected number of checksums" }
+          foreach ($line in $checksums) {
+            if ($line -notmatch '^([a-fA-F0-9]{64})  (MisterDownloadManager-[^/\\]+)$') {
+              throw "Invalid checksum entry"
+            }
+            $hash, $name = $Matches[1], $Matches[2]
+            if ($name -notin $expected) { throw "Unexpected release file: $name" }
+            if ((Get-FileHash (Join-Path dist $name) -Algorithm SHA256).Hash -ne $hash) {
+              throw "Checksum mismatch: $name"
+            }
+            $expected = @($expected | Where-Object { $_ -ne $name })
+          }
+          if ($expected.Count) { throw "Missing release files" }
+          $assets = @(Get-ChildItem dist -File)
+          if ($assets.Count -ne 4) { throw "Unexpected release assets" }
+          $tag = "windows-v{0}-{1}.{2}" -f $env:MDM_VERSION, $env:GITHUB_RUN_NUMBER, $env:GITHUB_RUN_ATTEMPT
+          @"
+          Windows x64 build of the PrudhviBojanapu fork, including its local window and duplicate-download fixes.
+
+          Source commit: $env:GITHUB_SHA
+          Build: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+
+          - setup.exe: installer, with browser integration.
+          - portable.zip: portable app with its settings beside the executable.
+          - x64.zip: plain binaries using the normal profile.
+          - SHA256SUMS.txt: SHA-256 checksums.
+
+          The browser extension is bundled. These builds are unsigned; Windows SmartScreen may show a warning.
+          This is a fork build, not an official upstream release. The in-app updater still targets upstream.
+          "@ | Set-Content release-notes.txt -Encoding utf8
+          gh release create $tag @($assets.FullName) --target $env:GITHUB_SHA --latest `
+            --title "Windows x64 $env:MDM_VERSION (fork build $env:GITHUB_RUN_NUMBER)" `
+            --notes-file release-notes.txt
+          if ($LASTEXITCODE) { throw "Release publication failed" }

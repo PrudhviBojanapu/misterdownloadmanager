@@ -8,6 +8,12 @@ issue, where the details and the discussion are. Released changes are in
 
 ✅ done · 🔄 being built · 📋 planned · 🔍 looking into it
 
+## Fork maintenance
+
+- ✅ Windows x64 releases built on standard GitHub-hosted runners: installer, portable and plain
+  ZIPs, regression/extension/download checks, SHA-256 checksums and automatic publication on this
+  fork's Releases page; also runnable by hand.
+
 ## Version 0.5.0
 
 Everything below ships together, in version 0.5.0.

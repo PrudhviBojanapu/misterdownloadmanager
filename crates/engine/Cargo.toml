@@ -40,7 +40,6 @@ hex.workspace = true
 # Proxy auto-config scripts (src/pac.rs): QuickJS, built from C (no bindgen: its bindings come
 # with it). Only the language: no module loader, no file or OS access.
 rquickjs = { version = "0.14.0", default-features = false, features = ["std"] }
-suppaftp.workspace = true
 hickory-resolver.workspace = true
 socket2.workspace = true
 network-interface.workspace = true
@@ -54,7 +53,6 @@ unicode-segmentation = "1.13.3"
 http = "1.5.0"
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
-tokio-rustls.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Sparse part files (src/sparse.rs, D-008 amendment) and the free-space probe (src/disk.rs).

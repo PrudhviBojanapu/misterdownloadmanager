@@ -97,18 +97,11 @@ pub fn status_width(code: &str, full: &str, measure: impl Fn(&str) -> f32) -> f3
 /// What the Status cell says at its widest while a file is checked or a video joined, in
 /// language `code` (`crate::model::checking` and `merging`): the word with 100 % (as `full`, and
 /// as English writes it) and with "..." before MDM knows how far.
-pub fn finishing_texts(code: &str, full: &str) -> Vec<String> {
-    let i18n = crate::i18n::i18n();
-    let Some(lang) = i18n.from_code(code) else {
-        return Vec::new();
-    };
+pub fn finishing_texts(_code: &str, full: &str) -> Vec<String> {
     let mut texts = Vec::new();
     for template in ["Checking {percent}", "Merging {percent}"] {
         for percent in [full, "100%", "..."] {
-            texts.push(crate::i18n::fmt(
-                i18n.t(lang, template),
-                &[("percent", percent)],
-            ));
+            texts.push(crate::i18n::fmt(template, &[("percent", percent)]));
         }
     }
     texts
@@ -1951,7 +1944,7 @@ mod tests {
         // As narrow as no text: the default.
         assert_eq!(status_width("de", "100 %", |_| 0.0), DEFAULT_WIDTHS[STATUS]);
         // A wide font: the widest text, its padding, whole pixels.
-        let wide = |s: &str| s.chars().count() as f32 * 7.3;
+        let wide = |s: &str| s.chars().count() as f32 * 14.3;
         let widest = texts.iter().map(|t| wide(t)).fold(0.0, f32::max);
         assert_eq!(
             status_width("de", "100\u{a0}%", wide),

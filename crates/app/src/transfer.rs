@@ -418,17 +418,19 @@ mod tests {
     #[test]
     fn addresses_are_found_in_any_text() {
         let text = "See https://a.org/x.zip, and (http://b.org/y.rar). Again: https://a.org/x.zip\n\
-                    <a href=\"https://c.org/z.7z\">z</a> ftp://f.org/f mailto://x httpnot";
+                    <a href=\"https://c.org/z.7z\">z</a> ftp://f.org/f ftps://f.org/f ftpes://f.org/f mailto://x httpnot";
         let urls: Vec<String> = import(text).into_iter().map(|d| d.url).collect();
         assert_eq!(
             urls,
             [
                 "https://a.org/x.zip",
                 "http://b.org/y.rar",
-                "https://c.org/z.7z",
-                "ftp://f.org/f"
+                "https://c.org/z.7z"
             ]
         );
+        for scheme in ["ftp", "ftps", "ftpes"] {
+            assert!(import(&format!("{scheme}://f.org/f")).is_empty());
+        }
         assert_eq!(export_text(&[]), "");
     }
 

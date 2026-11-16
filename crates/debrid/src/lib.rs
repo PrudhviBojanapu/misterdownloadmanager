@@ -1,4 +1,4 @@
-//! Debrid services (#44): the user's own account at a service such as Real-Debrid turns a file
+//! TorBox accounts: the user's own account turns a file
 //! host's link into a direct link, which MDM's engine then downloads as any file (every
 //! connection, resume). Only the services' official, documented APIs, with the user's own
 //! account; MDM ships no host lists or link sources, and never shows or copies the direct links
@@ -8,15 +8,9 @@
 //! (`mdm_engine::Options::unlocker`). Secrets (tokens) are kept by the app, in the system's
 //! keychain; here they are only in memory, and never written to a log.
 //!
-//! The services: Real-Debrid (`realdebrid`), AllDebrid (`alldebrid`), Premiumize (`premiumize`)
-//! TorBox (`torbox`) and Mega-Debrid (`megadebrid`), each from its own public API
-//! documentation, on one interface
-//! (`ServiceKind`).
+//! TorBox is the only supported provider. Legacy service and credential enum variants remain
+//! readable so old settings and sealed credentials are never reinterpreted as TorBox accounts.
 
-pub mod alldebrid;
-pub mod megadebrid;
-pub mod premiumize;
-pub mod realdebrid;
 pub mod torbox;
 pub mod torrents;
 
@@ -30,9 +24,10 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-/// The services MDM knows.
+/// Persisted service identifiers. Only TorBox is operational.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ServiceKind {
+    // Missing service fields in old settings meant Real-Debrid, never TorBox.
     #[default]
     RealDebrid,
     AllDebrid,
@@ -42,15 +37,12 @@ pub enum ServiceKind {
 }
 
 impl ServiceKind {
-    /// Every service, in the order Options lists them: the most asked for first. Add an account
-    /// starts on the first.
-    pub const ALL: [ServiceKind; 5] = [
-        ServiceKind::TorBox,
-        ServiceKind::RealDebrid,
-        ServiceKind::AllDebrid,
-        ServiceKind::Premiumize,
-        ServiceKind::MegaDebrid,
-    ];
+    /// Services available for new accounts.
+    pub const ALL: [ServiceKind; 1] = [ServiceKind::TorBox];
+
+    pub fn supported(self) -> bool {
+        self == ServiceKind::TorBox
+    }
 
     /// The service's name, as it writes it (not translated).
     pub fn name(self) -> &'static str {
@@ -63,49 +55,32 @@ impl ServiceKind {
         }
     }
 
-    /// The service's page where a user finds their API token (key).
+    /// Token settings page. Removed services deliberately have no actionable link.
     pub fn token_page(self) -> &'static str {
         match self {
-            ServiceKind::RealDebrid => "https://real-debrid.com/apitoken",
-            ServiceKind::AllDebrid => "https://alldebrid.com/apikeys",
-            ServiceKind::Premiumize => "https://www.premiumize.me/account",
             ServiceKind::TorBox => "https://torbox.app/settings",
-            // Its "API Key" section, where an application (and its key) is made.
-            ServiceKind::MegaDebrid => "https://www.mega-debrid.eu/index.php?page=profil",
+            _ => "",
         }
     }
 
-    /// Whether it signs in by code in the browser (Real-Debrid's device flow, AllDebrid's PIN,
-    /// TorBox's device code). Premiumize's needs a client registered by MDM's maintainer: its API
-    /// key is pasted. Mega-Debrid has none: its user name and password, or its API key.
+    /// Whether it signs in with TorBox's browser device code.
     pub fn signs_in_by_code(self) -> bool {
-        !matches!(self, ServiceKind::Premiumize | ServiceKind::MegaDebrid)
+        self.supported()
     }
 
-    /// Whether it signs in with the user name and password (Mega-Debrid's `connectUser`), the
-    /// other way to its pasted API key.
-    pub fn signs_in_with_password(self) -> bool {
-        matches!(self, ServiceKind::MegaDebrid)
-    }
-
-    /// Whether it downloads torrents for MDM (`torrents`). Mega-Debrid's torrent calls don't
-    /// document the states a torrent goes through, nor its files' links: not yet.
+    /// Whether it downloads torrents for MDM.
     pub fn takes_magnets(self) -> bool {
-        !matches!(self, ServiceKind::MegaDebrid)
+        self.supported()
     }
 
-    /// The requests a minute MDM allows itself (each service's published limit, halved or more:
-    /// Real-Debrid 250 a minute, AllDebrid 600, Mega-Debrid 50 a second; Premiumize publishes
-    /// none). TorBox: 300 a minute
+    /// The requests a minute MDM allows itself. TorBox: 300 a minute
     /// for each endpoint, per API key, and 60 new web downloads (or uncached torrents) an hour
     /// (https://support.torbox.app/en/articles/13726368-api-rate-limits); a refused request
     /// pauses it as any "too many requests" does.
     fn per_minute(self) -> usize {
         match self {
-            ServiceKind::RealDebrid => 120,
-            ServiceKind::AllDebrid => 300,
-            ServiceKind::Premiumize | ServiceKind::MegaDebrid => 60,
             ServiceKind::TorBox => 120,
+            _ => 0,
         }
     }
 }
@@ -113,21 +88,13 @@ impl ServiceKind {
 /// Where the services answer (tests: the lab server's fakes, [`Services::at`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Services {
-    pub rd: realdebrid::Endpoints,
-    pub ad: Url,
-    pub pm: Url,
     pub tb: Url,
-    pub md: Url,
 }
 
 impl Default for Services {
     fn default() -> Self {
         Services {
-            rd: realdebrid::Endpoints::default(),
-            ad: Url::parse(alldebrid::BASE).expect("constant"),
-            pm: Url::parse(premiumize::BASE).expect("constant"),
             tb: Url::parse(torbox::BASE).expect("constant"),
-            md: Url::parse(megadebrid::BASE).expect("constant"),
         }
     }
 }
@@ -136,11 +103,7 @@ impl Services {
     /// The lab server's fakes at `base` (`http://127.0.0.1:PORT/`).
     pub fn at(base: &Url) -> Self {
         Services {
-            rd: realdebrid::Endpoints::at(base),
-            ad: base.join("ad/").expect("relative"),
-            pm: base.join("pm/api/").expect("relative"),
             tb: base.join("tb/v1/api/").expect("relative"),
-            md: base.join("md/api.php").expect("relative"),
         }
     }
 }
@@ -149,18 +112,15 @@ impl Services {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Credential {
-    /// A token the user pasted (Real-Debrid's personal API token).
+    /// TorBox's API token, pasted or obtained by device sign-in.
     Token { token: String },
-    /// The device flow's user-bound client and its refresh token (Real-Debrid).
+    /// Legacy only: readable for migration, never used to sign in.
     Oauth {
         client_id: String,
         client_secret: String,
         refresh_token: String,
     },
-    /// The user name and password the service signs in with (Mega-Debrid's `connectUser`). The
-    /// password itself is kept (sealed, in the keychain), to sign in again when the token the
-    /// sign-in gave is refused; only that token stays in memory. An application's key
-    /// ([`Credential::Token`]) keeps no password.
+    /// Legacy only: readable for migration, never used to sign in.
     Login { user: String, password: String },
 }
 
@@ -187,7 +147,7 @@ pub struct Account {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountInfo {
     pub user: String,
-    /// None: the service doesn't say (Mega-Debrid, for an application's key).
+    /// None: the service doesn't say.
     pub premium: Option<bool>,
     /// Premium time left.
     pub premium_left: Option<Duration>,
@@ -216,6 +176,14 @@ impl Fault {
     }
 }
 
+fn unsupported_service(service: ServiceKind) -> Fault {
+    ServiceFault::Other(format!(
+        "{} is no longer supported; only TorBox accounts are supported",
+        service.name()
+    ))
+    .into()
+}
+
 /// Requests to the services: through the user's proxy, DNS and network adapter (`net`, the
 /// engine's own client), each service at most its `per_minute` budget, and none for a while
 /// after it said "too many requests" (refused requests count, and abuse gets a block).
@@ -234,7 +202,7 @@ struct Budget {
 impl Http {
     /// `net`: the downloads' options (proxy, DNS, adapter); `services`: where they answer.
     pub fn new(net: &mdm_engine::Options, services: Services) -> Result<Self, String> {
-        let client = mdm_engine::http_client(net, &services.rd.rest).map_err(|e| e.to_string())?;
+        let client = mdm_engine::http_client(net, &services.tb).map_err(|e| e.to_string())?;
         Ok(Http {
             client,
             services,
@@ -244,6 +212,9 @@ impl Http {
 
     /// Wait for `kind`'s budget to allow one more request.
     async fn slot(&self, kind: ServiceKind) -> Result<(), Fault> {
+        if !kind.supported() {
+            return Err(unsupported_service(kind));
+        }
         loop {
             let wait = {
                 let mut all = self.budgets.lock().unwrap();
@@ -288,27 +259,6 @@ impl Http {
         self.client
             .get(url.clone())
             .header(reqwest::header::USER_AGENT, USER_AGENT)
-    }
-
-    fn delete(&self, url: &Url) -> reqwest::RequestBuilder {
-        self.client
-            .delete(url.clone())
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
-    }
-
-    /// Real-Debrid: send `req`, whose answer has no body (204); an error answer through `fault`.
-    async fn empty(
-        &self,
-        req: reqwest::RequestBuilder,
-        fault: fn(u16, &[u8], Option<u64>) -> Fault,
-    ) -> Result<(), Fault> {
-        let (status, body, retry_after) = self.send(ServiceKind::RealDebrid, req).await?;
-        if (200..300).contains(&status) {
-            return Ok(());
-        }
-        let f = fault(status, &body, retry_after);
-        self.pause(ServiceKind::RealDebrid, &f);
-        Err(f)
     }
 
     fn post_json(&self, url: &Url, body: &serde_json::Value) -> reqwest::RequestBuilder {
@@ -364,99 +314,25 @@ impl Http {
         }
         Ok((status, body, retry_after))
     }
-
-    /// Real-Debrid: send `req` and read its JSON answer; an error answer through `fault`.
-    async fn json<T: serde::de::DeserializeOwned>(
-        &self,
-        req: reqwest::RequestBuilder,
-        fault: fn(u16, &[u8], Option<u64>) -> Fault,
-    ) -> Result<T, Fault> {
-        let (status, body, retry_after) = self.send(ServiceKind::RealDebrid, req).await?;
-        if (200..300).contains(&status) {
-            return serde_json::from_slice(&body).map_err(|_| {
-                Fault::Service(ServiceFault::Other("an answer MDM can't read".into()))
-            });
-        }
-        let f = fault(status, &body, retry_after);
-        self.pause(ServiceKind::RealDebrid, &f);
-        Err(f)
-    }
 }
 
 const USER_AGENT: &str = concat!("MisterDownloadManager/", env!("CARGO_PKG_VERSION"));
 
-/// One account, signed in: its access token in memory (Real-Debrid's device flow gives tokens
-/// that expire; Mega-Debrid's sign-in one that lasts until the next sign-in; a pasted token
-/// doesn't).
+/// One supported account and its network client.
 struct Session {
     account: Account,
     http: Arc<Http>,
-    access: tokio::sync::Mutex<Option<(String, Instant)>>,
-    /// Mega-Debrid: what the sign-in behind `access` said (premium's end, Unix time; the
-    /// account's e-mail), so checking the account doesn't sign in again.
-    signed_in: std::sync::Mutex<Option<(i64, String)>>,
 }
 
 impl Session {
-    /// A token to call with: the pasted one, the device flow's access token, refreshed five
-    /// minutes before it expires, or the sign-in's. `refused`: the one a call just had refused;
-    /// a new one is made only if no other call made one since (on Mega-Debrid each sign-in ends
-    /// the token before it, so two downloads signing in at once would end each other's).
-    async fn token(&self, refused: Option<&str>) -> Result<String, Fault> {
+    /// TorBox's device flow and pasted keys both produce an API token.
+    async fn token(&self, _refused: Option<&str>) -> Result<String, Fault> {
+        if !self.account.service.supported() {
+            return Err(unsupported_service(self.account.service));
+        }
         match &self.account.credential {
             Credential::Token { token } => Ok(token.clone()),
-            Credential::Login { user, password } => {
-                let mut access = self.access.lock().await;
-                if let Some((t, _)) = access.as_ref()
-                    && Some(t.as_str()) != refused
-                {
-                    return Ok(t.clone());
-                }
-                let c = megadebrid::connect(&self.http, user, password).await?;
-                *access = Some((c.token.clone(), Instant::now()));
-                *self.signed_in.lock().unwrap() = Some((c.vip_end, c.email));
-                Ok(c.token)
-            }
-            Credential::Oauth {
-                client_id,
-                client_secret,
-                refresh_token,
-            } => {
-                let mut access = self.access.lock().await;
-                if let Some((t, until)) = access.as_ref()
-                    && Some(t.as_str()) != refused
-                    && *until > Instant::now()
-                {
-                    return Ok(t.clone());
-                }
-                let t =
-                    realdebrid::token(&self.http, client_id, client_secret, refresh_token).await?;
-                let until =
-                    Instant::now() + Duration::from_secs(t.expires_in.saturating_sub(300).max(60));
-                *access = Some((t.access_token.clone(), until));
-                Ok(t.access_token)
-            }
-        }
-    }
-
-    /// `call` with a token; once more with a fresh one after a sign-in error (another sign-in
-    /// to the same Mega-Debrid account replaces its token).
-    async fn with_token<T, F, Fut>(&self, call: F) -> Result<T, Fault>
-    where
-        F: Fn(String) -> Fut,
-        Fut: std::future::Future<Output = Result<T, Fault>>,
-    {
-        let token = self.token(None).await?;
-        match call(token.clone()).await {
-            Err(Fault::Service(ServiceFault::SignIn))
-                if matches!(
-                    self.account.credential,
-                    Credential::Oauth { .. } | Credential::Login { .. }
-                ) =>
-            {
-                call(self.token(Some(&token)).await?).await
-            }
-            r => r,
+            Credential::Login { .. } | Credential::Oauth { .. } => Err(ServiceFault::SignIn.into()),
         }
     }
 
@@ -472,77 +348,6 @@ impl Session {
             ))
         };
         match self.account.service {
-            ServiceKind::AllDebrid => {
-                let key = self.token(None).await?;
-                let u = match alldebrid::unlock(&self.http, &key, link).await {
-                    Ok(u) => u,
-                    Err(Fault::Unsupported) => return Ok(None),
-                    Err(e) => return Err(e),
-                };
-                // Some links take time to generate: ask every 5 s or more, up to 10 minutes,
-                // saying so in the event log, and stop as soon as the download is stopped.
-                let mut direct = u.link.clone();
-                if let Some(id) = u.delayed {
-                    let until = Instant::now() + Duration::from_secs(600);
-                    loop {
-                        let d = alldebrid::delayed(&self.http, &key, id).await?;
-                        match d.status {
-                            2 => {
-                                direct = d.link.unwrap_or_default();
-                                break;
-                            }
-                            3 => return Err(Fault::Service(ServiceFault::FileUnavailable)),
-                            _ => {}
-                        }
-                        if Instant::now() >= until {
-                            return Err(Fault::Service(ServiceFault::ServiceDown));
-                        }
-                        note(
-                            format!(
-                                "AllDebrid is preparing the link (about {} s)",
-                                d.time_left.max(0)
-                            ),
-                            None,
-                        );
-                        let wait = Duration::from_secs((d.time_left.max(0) as u64 / 4).max(5));
-                        tokio::select! {
-                            _ = tokio::time::sleep(wait) => {}
-                            _ = cancel.cancelled() => {
-                                return Err(Fault::Service(ServiceFault::Other("cancelled".into())));
-                            }
-                        }
-                    }
-                }
-                let url = Url::parse(&direct).map_err(|_| not_a_file())?;
-                Ok(Some(Unlocked {
-                    url,
-                    file_name: u.filename.filter(|n| !n.trim().is_empty()),
-                    size: (u.filesize > 0).then_some(u.filesize as u64),
-                    max_connections: None,
-                    headers: Default::default(),
-                }))
-            }
-            ServiceKind::Premiumize => {
-                let key = self.token(None).await?;
-                let d = match premiumize::direct(&self.http, &key, link).await {
-                    Ok(d) => d,
-                    Err(Fault::Unsupported) => return Ok(None),
-                    Err(e) => return Err(e),
-                };
-                // One file per host link; several are a folder (a later phase: the grabber).
-                let [entry] = d.content.as_slice() else {
-                    return Err(not_a_file());
-                };
-                let url = Url::parse(&entry.link).map_err(|_| not_a_file())?;
-                let name = entry.path.rsplit('/').next().unwrap_or("").to_owned();
-                Ok(Some(Unlocked {
-                    url,
-                    file_name: Some(name).filter(|n| !n.trim().is_empty()),
-                    size: (entry.size > 0).then_some(entry.size as u64),
-                    max_connections: None,
-                    headers: Default::default(),
-                }))
-            }
             ServiceKind::TorBox => {
                 use torbox::Kind;
                 let key = self.token(None).await?;
@@ -584,7 +389,7 @@ impl Session {
                         }
                     }
                 };
-                // One file per host link; several are a folder (as Premiumize: not a file).
+                // One file per host link; several are a folder, not a file.
                 let [file] = item.files.as_slice() else {
                     return Err(not_a_file());
                 };
@@ -602,67 +407,8 @@ impl Session {
                     headers: Default::default(),
                 }))
             }
-            ServiceKind::MegaDebrid => {
-                let l = match self
-                    .with_token(|t| async move { megadebrid::unlock(&self.http, &t, link).await })
-                    .await
-                {
-                    Ok(l) => l,
-                    Err(Fault::Unsupported) => return Ok(None),
-                    Err(e) => return Err(e),
-                };
-                // Its answer has the link only: the name and size come from the download.
-                let url = Url::parse(l.url()).map_err(|_| not_a_file())?;
-                Ok(Some(Unlocked {
-                    url,
-                    file_name: None,
-                    size: None,
-                    max_connections: None,
-                    headers: Default::default(),
-                }))
-            }
-            ServiceKind::RealDebrid => {
-                let u = match self
-                    .with_token(
-                        |t| async move { realdebrid::unrestrict(&self.http, &t, link).await },
-                    )
-                    .await
-                {
-                    Ok(u) => u,
-                    Err(Fault::Unsupported) => return Ok(None),
-                    Err(e) => return Err(e),
-                };
-                // A multi-link answer (a video site) has no single `download`: not a file.
-                let Some(url) = u.download.as_deref().and_then(|d| Url::parse(d).ok()) else {
-                    return Err(Fault::Service(ServiceFault::Other(
-                        "the service gave no file for this link".into(),
-                    )));
-                };
-                Ok(Some(Unlocked {
-                    url,
-                    file_name: u.filename.filter(|n| !n.trim().is_empty()),
-                    size: (u.filesize > 0).then_some(u.filesize as u64),
-                    max_connections: (u.chunks >= 1).then_some(u.chunks as u32),
-                    headers: Default::default(),
-                }))
-            }
+            service => Err(unsupported_service(service)),
         }
-    }
-}
-
-/// A service's id for a torrent, checked before it goes into an address: letters, digits, `-`
-/// and `_` only.
-pub(crate) fn plain_id(id: &str) -> Result<&str, Fault> {
-    if !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        Ok(id)
-    } else {
-        Err(Fault::Service(ServiceFault::Other(
-            "the service gave an id MDM can't use".into(),
-        )))
     }
 }
 
@@ -683,6 +429,7 @@ pub fn host_matches(host: &str, domains: &[String]) -> bool {
 pub struct Debrid {
     sessions: Arc<RwLock<Vec<Arc<Session>>>>,
     domains: Arc<RwLock<HashMap<u64, Vec<String>>>>,
+    unsupported: Arc<RwLock<HashMap<u64, ServiceKind>>>,
 }
 
 impl std::fmt::Debug for Debrid {
@@ -694,18 +441,25 @@ impl std::fmt::Debug for Debrid {
 }
 
 impl Debrid {
-    /// Use these accounts (in this order), through `http`. Their host lists are kept for the
-    /// accounts still there; `refresh_hosts` reads them again.
+    /// Use TorBox accounts from this list, in order, through `http`. Legacy service entries
+    /// stay in the app's settings but are never routed or contacted here.
     pub fn set_accounts(&self, accounts: Vec<Account>, http: Arc<Http>) {
+        *self.unsupported.write().unwrap() = accounts
+            .iter()
+            .filter(|a| !a.service.supported())
+            .map(|a| (a.id, a.service))
+            .collect();
         let mut sessions = self.sessions.write().unwrap();
         let kept: Vec<Arc<Session>> = accounts
             .into_iter()
+            .filter(|a| a.service.supported())
             .map(|account| {
-                // The same account (service and credential) keeps its access token.
+                // Reuse the same account only when its service and credential still match.
                 sessions
                     .iter()
                     .find(|s| {
                         s.account.id == account.id
+                            && s.account.service == account.service
                             && s.account.credential == account.credential
                             && Arc::ptr_eq(&s.http, &http)
                     })
@@ -714,8 +468,6 @@ impl Debrid {
                         Arc::new(Session {
                             account,
                             http: http.clone(),
-                            access: tokio::sync::Mutex::new(None),
-                            signed_in: std::sync::Mutex::new(None),
                         })
                     })
             })
@@ -736,15 +488,8 @@ impl Debrid {
         let mut first = None;
         for s in sessions {
             let list = match s.account.service {
-                ServiceKind::RealDebrid => realdebrid::domains(&s.http).await,
-                ServiceKind::AllDebrid => alldebrid::domains(&s.http).await,
-                // Premiumize lists its services to signed-in accounts.
-                ServiceKind::Premiumize => match s.token(None).await {
-                    Ok(t) => premiumize::domains(&s.http, &t).await,
-                    Err(e) => Err(e),
-                },
                 ServiceKind::TorBox => torbox::domains(&s.http).await,
-                ServiceKind::MegaDebrid => megadebrid::domains(&s.http).await,
+                service => Err(unsupported_service(service)),
             };
             match list {
                 Ok(list) => {
@@ -796,8 +541,7 @@ impl Debrid {
     }
 
     /// A download of `url` through an account ended (done, or taken off MDM's list): on TorBox,
-    /// its web downloads leave the account's list, as a torrent does once downloaded. The other
-    /// services keep no list of unlocked links.
+    /// its web downloads leave the account's list, as a torrent does once downloaded.
     pub async fn release(&self, url: &Url) -> Result<(), Fault> {
         let Some((id, ServiceKind::TorBox)) = self.account_for(url) else {
             return Ok(());
@@ -817,46 +561,22 @@ impl Debrid {
             .iter()
             .find(|s| s.account.id == id)
             .cloned()
-            .ok_or(Fault::Service(ServiceFault::SignIn))?;
+            .ok_or_else(|| self.account_fault(id))?;
         account_info(&s).await
+    }
+
+    fn account_fault(&self, id: u64) -> Fault {
+        self.unsupported
+            .read()
+            .unwrap()
+            .get(&id)
+            .copied()
+            .map_or_else(|| ServiceFault::SignIn.into(), unsupported_service)
     }
 }
 
 async fn account_info(s: &Session) -> Result<AccountInfo, Fault> {
     match s.account.service {
-        ServiceKind::RealDebrid => {
-            let u = s
-                .with_token(|t| async move { realdebrid::user(&s.http, &t).await })
-                .await?;
-            Ok(AccountInfo {
-                premium: Some(u.kind == "premium" && u.premium > 0),
-                premium_left: (u.premium > 0).then(|| Duration::from_secs(u.premium as u64)),
-                user: u.username,
-            })
-        }
-        ServiceKind::AllDebrid => {
-            let u = alldebrid::user(&s.http, &s.token(None).await?).await?;
-            let left = u.premium_until - now_unix();
-            Ok(AccountInfo {
-                premium: Some(u.is_premium),
-                premium_left: (u.is_premium && left > 0).then(|| Duration::from_secs(left as u64)),
-                user: u.username,
-            })
-        }
-        ServiceKind::Premiumize => {
-            let a = premiumize::account(&s.http, &s.token(None).await?).await?;
-            let left = a.premium_until.map(|t| t - now_unix()).filter(|l| *l > 0);
-            Ok(AccountInfo {
-                premium: Some(left.is_some()),
-                premium_left: left.map(|l| Duration::from_secs(l as u64)),
-                // Premiumize gives no user name: its customer ID stands for it.
-                user: match a.customer_id {
-                    serde_json::Value::String(c) => c,
-                    serde_json::Value::Number(n) => n.to_string(),
-                    _ => String::new(),
-                },
-            })
-        }
         ServiceKind::TorBox => {
             let u = torbox::user(&s.http, &s.token(None).await?).await?;
             let left = u
@@ -873,54 +593,7 @@ async fn account_info(s: &Session) -> Result<AccountInfo, Fault> {
                 user: u.email,
             })
         }
-        ServiceKind::MegaDebrid => match &s.account.credential {
-            // Signing in says when premium ends; the account's e-mail stands for its name. The
-            // token the last sign-in gave is checked first: signing in again would end it, and
-            // the downloads using it with it.
-            Credential::Login { user, .. } => {
-                let held = s.access.lock().await.as_ref().map(|(t, _)| t.clone());
-                match held.filter(|_| s.signed_in.lock().unwrap().is_some()) {
-                    Some(t) => match megadebrid::token_works(&s.http, &t).await {
-                        Ok(()) => {}
-                        Err(Fault::Service(ServiceFault::SignIn)) => {
-                            s.token(Some(&t)).await?;
-                        }
-                        Err(e) => return Err(e),
-                    },
-                    // Not signed in yet: this signs in.
-                    None => {
-                        s.token(None).await?;
-                    }
-                }
-                let (vip_end, email) = s
-                    .signed_in
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .ok_or(Fault::Service(ServiceFault::SignIn))?;
-                let left = vip_end - now_unix();
-                Ok(AccountInfo {
-                    premium: Some(left > 0),
-                    premium_left: (left > 0).then(|| Duration::from_secs(left as u64)),
-                    user: if email.is_empty() {
-                        user.clone()
-                    } else {
-                        email
-                    },
-                })
-            }
-            // An application's key: the API has no call that says whether its account is
-            // premium (read 2026-11-11), so MDM checks that the key works and says no more. A
-            // free account's links are refused, with the service's reason, when downloading.
-            _ => {
-                megadebrid::token_works(&s.http, &s.token(None).await?).await?;
-                Ok(AccountInfo {
-                    premium: None,
-                    premium_left: None,
-                    user: String::new(),
-                })
-            }
-        },
+        service => Err(unsupported_service(service)),
     }
 }
 
@@ -947,8 +620,6 @@ pub async fn check(
             services: http.services.clone(),
             budgets: Mutex::default(),
         }),
-        access: tokio::sync::Mutex::new(None),
-        signed_in: std::sync::Mutex::new(None),
     };
     account_info(&s).await
 }
@@ -989,7 +660,7 @@ impl mdm_engine::Unlocker for AccountUnlocker {
     }
 }
 
-/// Sign-in by code: Real-Debrid's device flow, AllDebrid's PIN, TorBox's device code. The code to
+/// Sign-in by TorBox's device code. The code to
 /// show and the page to type it at, then a poll until the user allowed MDM there.
 pub mod signin {
     use super::*;
@@ -999,7 +670,7 @@ pub mod signin {
     pub struct Code {
         /// What the user types.
         pub shown: String,
-        /// Where (the page's address; AllDebrid's has the PIN in it already).
+        /// Where (the page's address).
         pub page: String,
         /// Ask every this many seconds, until this many have gone by.
         pub interval: u64,
@@ -1009,37 +680,12 @@ pub mod signin {
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Inner {
-        Rd(realdebrid::DeviceCode),
-        Ad(alldebrid::Pin),
         Tb(torbox::DeviceCode),
     }
 
     /// Step 1: a code from `service` (one that signs in by code).
     pub async fn start(http: &Http, service: ServiceKind) -> Result<Code, Fault> {
         match service {
-            ServiceKind::RealDebrid => {
-                let c = realdebrid::device_code(http).await?;
-                own_page(service, &c.verification_url)?;
-                Ok(Code {
-                    shown: c.user_code.clone(),
-                    page: c.verification_url.clone(),
-                    interval: c.interval.max(1),
-                    expires_in: c.expires_in,
-                    inner: Inner::Rd(c),
-                })
-            }
-            ServiceKind::AllDebrid => {
-                let p = alldebrid::pin(http).await?;
-                own_page(service, &p.user_url)?;
-                Ok(Code {
-                    shown: p.pin.clone(),
-                    page: p.user_url.clone(),
-                    // The docs: ask every 5 seconds or more.
-                    interval: 5,
-                    expires_in: p.expires_in,
-                    inner: Inner::Ad(p),
-                })
-            }
             ServiceKind::TorBox => {
                 let c = torbox::device_start(http).await?;
                 let left = c
@@ -1058,9 +704,7 @@ pub mod signin {
                     inner: Inner::Tb(c),
                 })
             }
-            ServiceKind::Premiumize | ServiceKind::MegaDebrid => Err(Fault::Service(
-                ServiceFault::Other(format!("{} signs in with its API key", service.name())),
-            )),
+            service => Err(unsupported_service(service)),
         }
     }
 
@@ -1068,20 +712,17 @@ pub mod signin {
     /// service's answer: it is opened only on the service's own site, over https. Anything else
     /// is a service that isn't answering as it should.
     fn own_page(service: ServiceKind, page: &str) -> Result<(), Fault> {
-        let site = match service {
-            ServiceKind::RealDebrid => "real-debrid.com",
-            ServiceKind::AllDebrid => "alldebrid.com",
-            ServiceKind::Premiumize => "premiumize.me",
-            ServiceKind::TorBox => "torbox.app",
-            ServiceKind::MegaDebrid => "mega-debrid.eu",
-        };
+        if !service.supported() {
+            return Err(unsupported_service(service));
+        }
         let ok = url::Url::parse(page).is_ok_and(|u| {
             u.scheme() == "https"
                 && u.username().is_empty()
                 && u.password().is_none()
                 && u.port().is_none()
-                && u.host_str()
-                    .is_some_and(|h| h == site || h.ends_with(&format!(".{site}")))
+                && u.host_str().is_some_and(|h| {
+                    h == "torbox.app" || h.ends_with(".torbox.app") || h == "tor.box"
+                })
         });
         if ok {
             Ok(())
@@ -1093,21 +734,6 @@ pub mod signin {
     /// Step 2, every `interval` seconds until `expires_in`: the credential once allowed.
     pub async fn poll(http: &Http, code: &Code) -> Result<Option<Credential>, Fault> {
         match &code.inner {
-            Inner::Rd(c) => {
-                let Some(cr) = realdebrid::device_credentials(http, &c.device_code).await? else {
-                    return Ok(None);
-                };
-                let t = realdebrid::token(http, &cr.client_id, &cr.client_secret, &c.device_code)
-                    .await?;
-                Ok(Some(Credential::Oauth {
-                    client_id: cr.client_id,
-                    client_secret: cr.client_secret,
-                    refresh_token: t.refresh_token,
-                }))
-            }
-            Inner::Ad(p) => Ok(alldebrid::pin_check(http, p)
-                .await?
-                .map(|token| Credential::Token { token })),
             Inner::Tb(c) => Ok(torbox::device_token(http, &c.device_code)
                 .await?
                 .map(|token| Credential::Token { token })),
@@ -1120,27 +746,25 @@ pub mod signin {
 
         #[test]
         fn only_the_services_own_site_over_https() {
-            let rd = ServiceKind::RealDebrid;
-            let ad = ServiceKind::AllDebrid;
-            assert!(own_page(rd, "https://real-debrid.com/device").is_ok());
-            assert!(own_page(rd, "https://www.real-debrid.com/device").is_ok());
-            assert!(own_page(ad, "https://alldebrid.com/pin/?pin=ABCD").is_ok());
+            let tb = ServiceKind::TorBox;
+            assert!(own_page(tb, "https://torbox.app/device").is_ok());
+            assert!(own_page(tb, "https://www.torbox.app/device").is_ok());
+            assert!(own_page(tb, "https://tor.box/link").is_ok());
             for bad in [
-                "http://real-debrid.com/device",
-                "https://real-debrid.com.example.net/device",
-                "https://notreal-debrid.com/device",
-                "https://example.com/real-debrid.com",
-                "https://user@real-debrid.com/device",
-                "https://real-debrid.com:8443/device",
+                "http://torbox.app/device",
+                "https://torbox.app.example.net/device",
+                "https://nottorbox.app/device",
+                "https://example.com/torbox.app",
+                "https://user@torbox.app/device",
+                "https://torbox.app:8443/device",
                 "file:///C:/Windows/system32/calc.exe",
                 "javascript:alert(1)",
-                "real-debrid.com/device",
+                "torbox.app/device",
                 "",
             ] {
-                assert!(own_page(rd, bad).is_err(), "{bad}");
+                assert!(own_page(tb, bad).is_err(), "{bad}");
             }
-            assert!(own_page(ad, "https://real-debrid.com/device").is_err());
-            let tb = ServiceKind::TorBox;
+            assert!(own_page(ServiceKind::RealDebrid, "https://real-debrid.com/device").is_err());
             assert!(
                 own_page(
                     tb,
@@ -1159,25 +783,12 @@ mod tests {
 
     #[test]
     fn the_services_with_a_browser_sign_in_keep_it() {
-        // Options' "Sign in in the browser" button: Real-Debrid, AllDebrid and TorBox.
+        // Options' browser sign-in button must only offer TorBox.
         let by_code: Vec<_> = ServiceKind::ALL
             .into_iter()
             .filter(|s| s.signs_in_by_code())
             .collect();
-        assert_eq!(
-            by_code,
-            [
-                ServiceKind::TorBox,
-                ServiceKind::RealDebrid,
-                ServiceKind::AllDebrid
-            ]
-        );
-        // Mega-Debrid alone by user name and password; every service also by a pasted key.
-        let by_password: Vec<_> = ServiceKind::ALL
-            .into_iter()
-            .filter(|s| s.signs_in_with_password())
-            .collect();
-        assert_eq!(by_password, [ServiceKind::MegaDebrid]);
+        assert_eq!(by_code, [ServiceKind::TorBox]);
     }
 
     #[test]

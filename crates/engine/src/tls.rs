@@ -1,6 +1,6 @@
-//! The certificates secure connections (HTTPS, FTPS, DNS over TLS or HTTPS) check servers with:
+//! The certificates secure connections (HTTPS, DNS over TLS or HTTPS) check servers with:
 //! the system's. A system without any (a minimal Linux without the `ca-certificates` package,
-//! #264) still gives every client: plain HTTP and FTP work, and each secure connection fails
+//! #264) still gives every client: plain HTTP works, and each secure connection fails
 //! with [`NO_ROOTS`], which the engine reports as `Error::NoCertificates`. The torrent session's
 //! HTTP clients take the same setup (mdm-torrent), so a session still starts there: DHT, peers
 //! and plain HTTP trackers work, HTTPS trackers fail with [`NO_ROOTS`].
@@ -21,6 +21,29 @@ pub const NO_ROOTS: &str = "this system has no trusted certificates to check the
 /// The crypto provider MDM's own TLS configurations use (the one reqwest uses too).
 pub(crate) fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+}
+
+/// TLS for encrypted DNS and the download tests: verify against the system's trust store,
+/// optionally trusting additional CA certificates. Missing system roots never disable checks.
+pub(crate) fn client_config(extra: &[Vec<u8>]) -> Result<rustls::ClientConfig, rustls::Error> {
+    use rustls_platform_verifier::Verifier;
+    if extra.is_empty() && !system_has_roots() {
+        return Ok(no_roots_config());
+    }
+    let provider = provider();
+    let verifier = if extra.is_empty() {
+        Verifier::new(provider.clone())
+    } else {
+        Verifier::new_with_extra_roots(
+            extra.iter().map(|c| CertificateDer::from(c.clone())),
+            provider.clone(),
+        )
+    }?;
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth())
 }
 
 /// Whether the system has certificates to check servers with. Windows and macOS always do
@@ -216,7 +239,7 @@ impl ServerCertVerifier for NoRoots {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdm_labserver::{Config, LabServer, ftp};
+    use mdm_labserver::{Config, LabServer};
 
     /// A client of a system without certificates.
     fn without_roots() -> reqwest::Client {
@@ -241,15 +264,10 @@ mod tests {
 
     #[tokio::test]
     async fn without_certificates_https_says_why() {
-        // An implicit-FTPS server opens with a TLS handshake, as an HTTPS server does: the
-        // client sees its certificate and refuses it before any HTTP.
-        let server = ftp::FtpServer::start(
-            "127.0.0.1:0".parse().unwrap(),
-            ftp::FtpConfig {
-                tls: ftp::FtpTls::Implicit,
-                ..Default::default()
-            },
-        )
+        let server = LabServer::start(Config {
+            tls: true,
+            ..Default::default()
+        })
         .await
         .unwrap();
         let e = without_roots()
@@ -266,7 +284,7 @@ mod tests {
     /// A client of this system (its verifier, as MDM's downloads have it), trusting the lab's
     /// test CA besides.
     fn trusting(ca: Vec<u8>) -> reqwest::Client {
-        let config = crate::ftp::client_config(&[ca]).unwrap();
+        let config = client_config(&[ca]).unwrap();
         reqwest::Client::builder()
             .tls_backend_preconfigured(config)
             .build()

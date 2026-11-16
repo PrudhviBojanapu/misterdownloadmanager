@@ -1,4 +1,4 @@
-//! Download queues (notes/ENGINE.md §5, IDM's scheduler help): a queue downloads N files at a
+//! Basic download queues: a queue downloads N files at a
 //! time in list order; a file that fails moves to the end and is retried 30 s later (or up to
 //! a retry limit); finished files leave download queues; a queue with nothing left to start or
 //! running stops.
@@ -13,6 +13,8 @@ pub const RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+/// Legacy serialized scheduling data, preserved for compatibility only.
+/// No runtime code evaluates times, startup actions, wake timers or finish commands.
 pub struct Schedule {
     pub start_on_startup: bool,
     /// Daily start time (h, m, s) and the weekdays it applies to (Sunday first).
@@ -35,54 +37,12 @@ pub struct Schedule {
     pub wake: bool,
 }
 
-/// What happens when a queue, or one download, is done (besides opening a file).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WhenDone {
-    pub hang_up: bool,
-    pub exit: bool,
-    pub turn_off: Option<TurnOff>,
-    /// With `turn_off`: don't let other programs delay it.
-    pub force: bool,
-}
-
 /// "Turn off computer when done" modes, in IDM's combo order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TurnOff {
     ShutDown,
     Sleep,
     Hibernate,
-}
-
-impl Schedule {
-    pub fn when_done(&self) -> WhenDone {
-        WhenDone {
-            hang_up: self.hang_up,
-            exit: self.exit_when_done,
-            turn_off: self.turn_off,
-            force: self.force_close,
-        }
-    }
-
-    /// Whether the start time applies on this day: "Once at" its date, else "Daily" on the
-    /// checked weekdays. `weekday` counts from Sunday = 0.
-    pub fn starts_on(&self, date: (i32, u32, u32), weekday: usize) -> bool {
-        match self.once {
-            Some(d) => d == date,
-            None => self.days[weekday % 7],
-        }
-    }
-}
-
-impl TurnOff {
-    pub const ALL: [TurnOff; 3] = [TurnOff::ShutDown, TurnOff::Sleep, TurnOff::Hibernate];
-    pub const LABELS: [&'static str; 3] = [
-        // i18n: what the computer does when the queue is done (verb: shut down the computer)
-        crate::i18n::mark("Shut down"),
-        // i18n: what the computer does when the queue is done (verb: put it to sleep)
-        crate::i18n::mark("Sleep"),
-        // i18n: what the computer does when the queue is done (verb: hibernate it)
-        crate::i18n::mark("Hibernate"),
-    ];
 }
 
 impl Default for Schedule {
@@ -198,16 +158,6 @@ pub fn requeue_failed(q: &mut Queue, id: u64) {
     }
 }
 
-/// Did the clock pass `t` (h, m, s) between `prev` and `now` (seconds since midnight)?
-pub fn crossed(t: (u8, u8, u8), prev: u32, now: u32) -> bool {
-    let s = t.0 as u32 * 3600 + t.1 as u32 * 60 + t.2 as u32;
-    if prev <= now {
-        prev < s && s <= now
-    } else {
-        s > prev || s <= now
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,14 +221,23 @@ mod tests {
     }
 
     #[test]
-    fn once_at_a_date_or_daily_on_checked_days() {
-        let mut s = Schedule::default();
-        s.days[0] = false; // not on Sundays
-        assert!(!s.starts_on((2026, 11, 1), 0));
-        assert!(s.starts_on((2026, 11, 2), 1));
-        s.once = Some((2026, 11, 3));
-        assert!(!s.starts_on((2026, 11, 2), 1), "only on its date");
-        assert!(s.starts_on((2026, 11, 3), 2));
+    fn legacy_schedules_are_loaded_without_starting_the_queue() {
+        let queue: Queue = serde_json::from_str(
+            r#"{
+            "name": "Saved queue", "files_at_once": 2, "items": [8, 9], "sync": true,
+            "running": true,
+            "schedule": {
+                "start_on_startup": true, "start_at": [0, 0, 0], "stop_at": [23, 59, 59],
+                "open_when_done": "old-command.exe", "exit_when_done": true,
+                "turn_off": "ShutDown", "wake": true
+            }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(queue.items, [8, 9]);
+        assert!(!queue.running);
+        assert!(queue.schedule.start_on_startup);
+        assert_eq!(queue.schedule.turn_off, Some(TurnOff::ShutDown));
     }
 
     #[test]
@@ -286,13 +245,5 @@ mod tests {
         let mut qq = q(1, &[1, 2, 3]);
         requeue_failed(&mut qq, 1);
         assert_eq!(qq.items, vec![2, 3, 1]);
-    }
-
-    #[test]
-    fn schedule_time_crossing() {
-        let eleven_pm = (23, 0, 0);
-        assert!(crossed(eleven_pm, 82_799, 82_800));
-        assert!(!crossed(eleven_pm, 82_800, 82_801));
-        assert!(crossed((0, 0, 5), 86_398, 6), "across midnight");
     }
 }

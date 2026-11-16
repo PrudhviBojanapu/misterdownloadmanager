@@ -52,6 +52,7 @@ impl Route {
                 settings
                     .debrid_accounts
                     .iter()
+                    .filter(|a| a.service.supported())
                     .map(|a| (a.id, a.user.clone()))
                     .collect(),
             ),
@@ -76,7 +77,7 @@ impl Route {
         self.debrid.unlocker_for(url)
     }
 
-    /// The service that takes `url`, and the account's name: "Real-Debrid (labuser)".
+    /// TorBox and the account's name.
     pub fn through(&self, url: &url::Url) -> Option<String> {
         let (id, service) = self.account(url)?;
         let user = self
@@ -91,7 +92,7 @@ impl Route {
         })
     }
 
-    /// Just the service's name ("Real-Debrid"), for the narrow places.
+    /// Just the service's name, for the narrow places.
     pub fn service(&self, url: &url::Url) -> Option<&'static str> {
         self.account(url).map(|(_, s)| s.name())
     }
@@ -109,7 +110,7 @@ pub fn state_text(info: &AccountInfo) -> String {
         (Some(true), None) => crate::i18n::t("premium").to_owned(),
         // i18n: Options → Accounts: a debrid account without premium (it can't unlock links)
         (Some(false), _) => crate::i18n::t("free account: links need premium").to_owned(),
-        // i18n: Options → Accounts: the service doesn't say whether the account is premium (Mega-Debrid, signed in with an API key); a free account's links are refused when downloading
+        // i18n: Options → Accounts: the service doesn't say whether the account is premium
         (None, _) => crate::i18n::t("the service doesn't say whether it is premium").to_owned(),
     }
 }
@@ -165,7 +166,7 @@ impl SignIn {
         ctx.request_repaint();
     }
 
-    /// Sign in by code (Real-Debrid's device flow, AllDebrid's PIN), in the browser.
+    /// Sign in by TorBox's device code in the browser.
     pub fn by_code(&self, service: ServiceKind, ctx: &egui::Context) {
         let (me, ctx) = (self.clone(), ctx.clone());
         me.set(SignInState::Starting, &ctx);
@@ -227,22 +228,6 @@ impl SignIn {
         });
     }
 
-    /// Sign in with the user name and password (Mega-Debrid's other way to its API key).
-    pub fn by_password(
-        &self,
-        service: ServiceKind,
-        user: String,
-        password: String,
-        ctx: &egui::Context,
-    ) {
-        let (me, ctx) = (self.clone(), ctx.clone());
-        me.set(SignInState::Checking, &ctx);
-        std::thread::spawn(move || {
-            let run = async { Ok((http()?, Credential::Login { user, password })) };
-            me.finish(service, run, &ctx);
-        });
-    }
-
     /// Run `run` (a credential), check the account it signs in to, and say how it went.
     fn finish(
         &self,
@@ -297,7 +282,7 @@ impl mdm_cli::Accounts for CliAccounts {
             let accounts: Vec<mdm_debrid::Account> = settings
                 .debrid_accounts
                 .iter()
-                .filter(|a| a.enabled)
+                .filter(|a| a.enabled && a.service.supported())
                 .filter_map(crate::settings::DebridAccount::account)
                 .collect();
             if !settings.debrid_on || accounts.is_empty() {

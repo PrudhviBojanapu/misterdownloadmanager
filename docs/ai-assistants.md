@@ -1,5 +1,31 @@
 # AI assistants (MCP)
 
+## Retained-feature automation
+
+The MCP `control` tool takes `{"operation": {...}}`, with the same typed operation schema as
+`misterdownloadmanager-cli control JSON`. See the complete [operation inventory](command-line.md#typed-non-interactive-app-control).
+It manages the **running app's list**, including properties, settings, categories, basic queues,
+TorBox accounts, remote pairing/devices, video/gallery/playlist downloads and torrent
+metadata/selection/trackers/recheck/order. This is separate from standalone CLI downloads.
+
+`add_download` now returns the app's real id/result and never asks a duplicate question.
+Its `duplicate` policy defaults to `skip`; `add`, `resume`, or destructive `replace` must be
+chosen explicitly. `category` and `queue` are also accepted.
+
+Settings and account reads omit credentials; write-only credentials must come from the user,
+not inferred values. Missing patch fields preserve existing values. Removed feature keys are
+rejected. Poll lookup jobs to completion; moves, renames and torrent actions can remain pending
+after acceptance. Inspect properties/status afterward; do not report acceptance as success.
+
+No GUI is needed for these operations. Inspect `helpers` and use `install_helper` jobs when media
+helpers are missing (or use the standalone CLI install commands).
+`choose_helper` validates/persists trusted custom executables (null resets to the default).
+`verify_checksum` starts a completed-file verification job; inspect its final `matched` and
+`status`, not just `pending:false`. A mismatch does not delete or redownload the file.
+TorBox browser authorization is not exposed: a user-supplied API key through `torbox` is the
+supported functional sign-in alternative. UI-only layout/window preferences are not exposed;
+retained operational settings, including subtitle defaults and torrent associations, are configurable. (MCP)
+
 [← Back to docs index](README.md)
 
 MDM comes with an [MCP](https://modelcontextprotocol.io) server, `misterdownloadmanager-mcp`, so an AI assistant that supports MCP (Claude Desktop, Claude Code, Cursor, VS Code and others) can work with the downloads in your running MDM. You ask in your own words:
@@ -16,7 +42,8 @@ The assistant starts the server itself; you only tell the assistant where it is,
 | Tool | What it does |
 |---|---|
 | `list_downloads` | Lists your downloads, newest first: file, address, folder, status, size, how much is done, speed. It can list only one status (Queued, Downloading, Stopped, Complete, Error) or only names and addresses that contain some text. |
-| `add_download` | Adds an http, https, ftp or ftps address and starts it, or only queues it. It can say which folder and file name to use. A magnet link opens **Add torrent** in MDM, for you to choose the files. |
+| `add_download` | Adds HTTP/HTTPS or a magnet without dialogs; accepts folder, file name, category, queue and explicit duplicate policy. A magnet takes all files asynchronously; use `control` with torrent lookup/add to select files and observe failures. |
+| `control` | Typed retained-feature operations described above; inspect/edit the running app without direct settings-file writes. |
 | `pause_downloads` | Pauses running downloads. |
 | `resume_downloads` | Starts or resumes stopped, queued or failed downloads. |
 | `remove_downloads` | Removes downloads from the list and keeps their files, or deletes the files too when asked. A running download must be paused first. |

@@ -1041,6 +1041,8 @@
 #. Options, Downloads, under "Show download complete dialog": {time} when the snooze ends, like "14:30"
 #. {time} = a time of day (keep the braces as they are)
 	Download complete is snoozed until {time}	Download complete is snoozed until {time}
+#. window title in filecollision.rs
+	Download error	Download error
 #. text in the Options window
 	Download failed	Download failed
 #. window title in a dialog box
@@ -1170,7 +1172,7 @@
 #. in Import, where the addresses came from: dragged onto the window
 	Dropped links	Dropped links
 #. window title in a dialog box
-	Duplicate download link	Duplicate download link
+	Duplicate download	Duplicate download
 #. text in the Options window
 #. Options → Network adapter: what "Any" means
 	Each connection takes the system's route.	Each connection takes the system's route.
@@ -1732,6 +1734,8 @@
 	Into a folder named after it, when it holds several things	Into a folder named after it, when it holds several things
 #. text in a dialog box
 	Invalid address	Invalid address
+#. text in filecollision.rs
+	Invalid destination	Invalid destination
 #. text in the Options window
 #. Options → DNS over HTTPS: label before the server's IP addresses, which may be left empty
 	IP addresses (optional):	IP addresses (optional):
@@ -2382,6 +2386,8 @@
 #. text in the Add torrent window
 #. the magnet link names no tracker (a server that lists a torrent's peers)
 	No trackers	No trackers
+#. text in filecollision.rs
+	No valid unfinished download was found.	No valid unfinished download was found.
 #. text in the Download video window
 #. the Download video window: yt-dlp found no video on the page
 	No video found on this page. Play the video, then use the Download video button over it.	No video found on this page. Play the video, then use the Download video button over it.
@@ -2556,6 +2562,8 @@
 	Open magnet links and .torrent files with Mister Download Manager	Open magnet links and .torrent files with Mister Download Manager
 #. text in the tray icon's menu
 	Open Mister Download Manager	Open Mister Download Manager
+#. text in a dialog box
+	Open or resume the existing download	Open or resume the existing download
 #. text in extension.rs
 #. step 2 of turning on the Safari extension; Cmd is the Command key
 	Open Safari's settings (Cmd+,).	Open Safari's settings (Cmd+,).
@@ -2593,6 +2601,8 @@
 #. text in the Options window
 #. Options → Add an account: label before the field for the service's API token (the other way to sign in)
 	Or paste your API token:	Or paste your API token:
+#. text in filecollision.rs
+	Overwrite discards partial data; completed files stay until success.	Overwrite discards partial data; completed files stay until success.
 #. text in the Link grabber window
 #. Link grabber: the box that edits the selected package
 	Package	Package
@@ -2715,6 +2725,9 @@
 #. text in debrid.rs
 #. Options → Accounts: a debrid account's state; {days} the days of premium left
 	premium, {days} days left	premium, {days} days left
+#. text in filecollision.rs
+#. the trailing ... means it is still going on: keep it
+	Preparing download...	Preparing download...
 #. text in the Options window
 #. Options → General: shown inside the shortcut recorder box while waiting for the user to press a 2-key or 3-key shortcut (#558)
 #. the trailing ... means it is still going on: keep it
@@ -2873,9 +2886,13 @@
 #. text in a download's progress window
 #. label: whether the server lets a stopped download continue (Yes / No)
 	Resume capability	Resume capability
+#. text in a dialog box
+	Resume existing unfinished download	Resume existing unfinished download
 #. text in the Options window
 #. link after "Download complete is snoozed until 14:30": ends the snooze now
 	Resume now	Resume now
+#. text in filecollision.rs
+	Resume unavailable: missing, invalid or mismatched partial download.	Resume unavailable: missing, invalid or mismatched partial download.
 #. message or event log entry in the main window
 #. event log entry, past tense: the download resumed (just now)
 	Resumed	Resumed
@@ -3194,6 +3211,8 @@
 	size unknown	size unknown
 #. text in a download's Properties window
 	Size:	Size:
+#. text in a dialog box
+	Skip this download	Skip this download
 #. text in a download's progress window; text in torrentfiles.rs
 #. a torrent file the user chose not to download
 #. status of a torrent file the user chose not to download
@@ -3560,6 +3579,8 @@
 #. text in extracting archives (a download's log, the Archive password window)
 #. in a download's log, after HatchZip (a program's name) extracted in place: the entries left out (links, unsafe names) were not deleted, they are still in {folder}
 	The entries left out are still in {folder}	The entries left out are still in {folder}
+#. text in filecollision.rs
+	The existing download is running. It will not be overwritten.	The existing download is running. It will not be overwritten.
 #. text in extension.rs
 	The extension is already in this app. Apple hasn't notarized this build, so Safari needs these steps to allow it.	The extension is already in this app. Apple hasn't notarized this build, so Safari needs these steps to allow it.
 #. text in errors.rs
@@ -3622,6 +3643,8 @@
 #. text in errors.rs; text in torrent downloads
 #. an error: the network adapter chosen in Options (a VPN's, usually) is off or gone; {adapter} its name
 	the network adapter {adapter} is not connected	the network adapter {adapter} is not connected
+#. text in filecollision.rs
+	The partial download does not match this file.	The partial download does not match this file.
 #. text in extracting archives (a download's log, the Archive password window)
 #. why an archive wasn't extracted (after "Couldn't extract {name}: ")
 	the password is wrong	the password is wrong
@@ -3797,9 +3820,15 @@
 #. {error} is why, in English (a file that isn't a theme or a colour scheme, a colour missing)
 #. {error} = an error message (keep the braces as they are)
 	This file can't be used as a theme: {error}	This file can't be used as a theme: {error}
+#. text in filecollision.rs
+	This file cannot be overwritten.	This file cannot be overwritten.
+#. text in filecollision.rs
+	This file is in use. Wait for its download to stop.	This file is in use. Wait for its download to stop.
 #. text in remote.rs
 #. remote control page (on a phone): the file chosen is too large for a .torrent file
 	This file is too large to be a torrent.	This file is too large to be a torrent.
+#. text in a dialog box
+	This filename is already on disk or in the download list:	This filename is already on disk or in the download list:
 #. text in a dialog box
 	This folder does not exist:	This folder does not exist:
 #. message or event log entry in the main window

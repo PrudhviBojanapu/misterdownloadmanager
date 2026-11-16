@@ -2,6 +2,13 @@
 
 [← Back to docs index](README.md)
 
+> **Windows fork:** Metro dark is the only supported appearance. Its flat controls and square
+> corners are retained, with colored action, category, file-type and status icons. Disabled
+> icons remain muted; caption controls stay neutral. Other themes, theme imports, Base16/pywal
+> integration and the theme/language/renderer pickers are removed from the application.
+> Rendering uses Direct3D 12, with Microsoft's WARP software fallback rather than OpenGL.
+> The remainder of this page documents the upstream theme format, not additional fork features.
+
 A theme changes how MDM looks and keeps everything where it was: the same windows, menus and
 buttons in the same places, drawn in other colours, shapes and icons. Each theme has a light and
 a dark side.

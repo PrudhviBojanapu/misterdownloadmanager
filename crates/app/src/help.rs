@@ -12,11 +12,11 @@ use crate::dialogs::{Outcome, window};
 use crate::winui::{self, ButtonKind, r};
 
 /// The repository: problem reports, releases, source, licences.
-pub const REPO: &str = "https://github.com/anefzaoui/misterdownloadmanager";
+pub const REPO: &str = "https://github.com/PrudhviBojanapu/misterdownloadmanager";
 /// The creator's GitHub Sponsors page: Help → Support MDM, About's last line. The website, the
 /// extension's popup and the repository's Sponsor button (.github/FUNDING.yml) point there too.
 pub const SPONSORS: &str = "https://github.com/sponsors/anefzaoui";
-const LATEST: &str = "https://api.github.com/repos/anefzaoui/misterdownloadmanager/releases/latest";
+const LATEST: &str = mdm_tools::update::RELEASES_API;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("MDM_COMMIT");
 /// While MDM runs, the automatic check comes again this often (it also checks at every start).
@@ -301,10 +301,13 @@ pub struct Updates {
     status: Option<UpdateStatus>,
     /// Update now pressed by a test (`/show update-now`, feature `test-update`).
     press: bool,
+    automatic: bool,
+    idle_gate: Option<Arc<crate::update::IdleGate>>,
 }
 
 #[derive(Clone, Debug)]
 enum UpdateStatus {
+    Waiting,
     Failed(String),
     /// A .deb or .rpm, opened in the system's package installer.
     Opened,
@@ -324,6 +327,8 @@ impl Updates {
             job: None,
             status: None,
             press: false,
+            automatic: false,
+            idle_gate: None,
         }
     }
 
@@ -335,7 +340,92 @@ impl Updates {
             job: None,
             status: None,
             press: false,
+            automatic: false,
+            idle_gate: None,
         }
+    }
+
+    pub fn automatic(release: Release) -> Self {
+        Self {
+            automatic: true,
+            status: Some(UpdateStatus::Waiting),
+            ..Self::found(release)
+        }
+    }
+
+    pub fn drive_automatic(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        ctx: &egui::Context,
+        enabled: bool,
+        idle: bool,
+    ) {
+        if !enabled
+            && self.idle_gate.is_some()
+            && !self
+                .job
+                .as_ref()
+                .is_some_and(crate::update::Job::installing)
+        {
+            self.job = None;
+            self.idle_gate = None;
+            self.status = None;
+        }
+        if let Some(gate) = &self.idle_gate {
+            gate.set_idle(idle);
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        if !self.automatic {
+            return;
+        }
+        if !enabled {
+            self.automatic = false;
+            self.status = None;
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
+        if !idle {
+            return;
+        }
+        self.automatic = false;
+        let Some(Ok(Found::Newer(rel))) = &self.result else {
+            return;
+        };
+        let install = mdm_tools::update::Install::detect();
+        let Some(name) = crate::update::asset_for(install, &rel.version, &rel.assets) else {
+            self.status = Some(UpdateStatus::Failed(
+                "The release has no signed update for this installation.".into(),
+            ));
+            return;
+        };
+        let gate = Arc::new(crate::update::IdleGate::default());
+        gate.set_idle(true);
+        self.job = Some(crate::update::Job::start_when_idle(
+            rt,
+            ctx,
+            install,
+            rel.assets.clone(),
+            name,
+            Some(gate.clone()),
+        ));
+        self.idle_gate = Some(gate);
+        self.status = None;
+    }
+
+    /// Also polled by the app's clock: minimized windows may never receive a UI pass.
+    pub fn poll_update(&mut self) -> Option<bool> {
+        let res = self.job.as_ref().and_then(crate::update::Job::result)?;
+        self.job = None;
+        self.idle_gate = None;
+        match res {
+            Ok(crate::update::Next::Restart) => return Some(true),
+            Ok(crate::update::Next::Opened) => self.status = Some(UpdateStatus::Opened),
+            Err(error) => {
+                tracing::warn!("update installation failed: {error}");
+                self.status = Some(UpdateStatus::Failed(error));
+            }
+        }
+        Some(false)
     }
 
     /// `weekly`: the automatic check (its switch is here, under the answer). `Done(true)`:
@@ -353,13 +443,8 @@ impl Updates {
         let install = mdm_tools::update::Install::detect();
         // The release file arrived (checked) and is in place (on the job's thread): MDM closes
         // once the new copy (or the installer) has started.
-        if let Some(res) = self.job.as_ref().and_then(crate::update::Job::result) {
-            self.job = None;
-            match res {
-                Ok(crate::update::Next::Restart) => return Outcome::Done(true),
-                Ok(crate::update::Next::Opened) => self.status = Some(UpdateStatus::Opened),
-                Err(e) => self.status = Some(UpdateStatus::Failed(e)),
-            }
+        if self.poll_update() == Some(true) {
+            return Outcome::Done(true);
         }
         if self.job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -536,6 +621,8 @@ impl Updates {
                     let line = if installing {
                         // i18n: Check for updates, after Update now downloaded it: unpacking and putting the new version in place
                         crate::i18n::t("Installing the update...").to_owned()
+                    } else if job.waiting_for_idle() {
+                        "Update verified; waiting for 30 seconds idle before restarting.".to_owned()
                     } else {
                         crate::i18n::fmt(
                             // i18n: Check for updates, while Update now downloads; {percent} like "42%"
@@ -560,6 +647,10 @@ impl Updates {
                     );
                 } else if let Some(status) = &self.status {
                     let line = match status {
+                        UpdateStatus::Waiting => {
+                            "Waiting for downloads and file operations to finish before updating."
+                                .to_owned()
+                        }
                         UpdateStatus::Failed(e) => crate::i18n::fmt(
                             crate::i18n::t("The update couldn't be installed: {error}"),
                             &[("error", e)],
@@ -587,7 +678,7 @@ impl Updates {
                         o + vec2(11.0, bottom + 4.0),
                         weekly,
                         // i18n: check box in the update window: look for a new version every time MDM starts
-                        "Check for updates at every start",
+                        "Automatically update app and extension",
                         true,
                         Some(o.x + status_right),
                     );
@@ -619,6 +710,8 @@ impl Updates {
                             || (enter && idle)
                             || (idle && std::mem::take(&mut self.press))
                         {
+                            self.automatic = false;
+                            self.idle_gate = None;
                             self.status = None;
                             self.job = Some(crate::update::Job::start(
                                 rt,
@@ -662,6 +755,7 @@ impl Updates {
                 } else if close && self.job.is_some() {
                     // Cancel: the download stops, the window stays (Update now again, Later).
                     self.job = None;
+                    self.idle_gate = None;
                     Outcome::Open
                 } else if close || winui::escape_pressed(ui) || (enter && download.is_none()) {
                     Outcome::Closed
@@ -1137,6 +1231,83 @@ impl TellFriend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finished_updates_are_handled_without_rendering_a_window() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let release = Release {
+            version: "9.0.0".into(),
+            date: String::new(),
+            notes: String::new(),
+            page: String::new(),
+            assets: Vec::new(),
+        };
+        let mut updates = Updates::found(release);
+        updates.job = Some(crate::update::Job::finished_for_test(
+            rt.handle(),
+            Ok(crate::update::Next::Restart),
+        ));
+        assert_eq!(updates.poll_update(), Some(true));
+        assert_eq!(
+            updates.poll_update(),
+            None,
+            "completion is consumed only once"
+        );
+        updates.job = Some(crate::update::Job::finished_for_test(
+            rt.handle(),
+            Err("bad signature".into()),
+        ));
+        assert_eq!(updates.poll_update(), Some(false));
+        assert!(matches!(updates.status, Some(UpdateStatus::Failed(_))));
+        updates.job = Some(crate::update::Job::finished_for_test(
+            rt.handle(),
+            Ok(crate::update::Next::Restart),
+        ));
+        updates.idle_gate = Some(Arc::new(crate::update::IdleGate::default()));
+        updates.drive_automatic(rt.handle(), &egui::Context::default(), false, true);
+        assert!(
+            updates.job.is_none(),
+            "opt-out cancels an automatic job before installation"
+        );
+    }
+
+    #[test]
+    fn automatic_updates_wait_for_work_and_respect_opt_out() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let ctx = egui::Context::default();
+        let release = Release {
+            version: "9.0.0".into(),
+            date: String::new(),
+            notes: String::new(),
+            page: String::new(),
+            assets: Vec::new(),
+        };
+        let mut updates = Updates::automatic(release.clone());
+        updates.drive_automatic(rt.handle(), &ctx, true, false);
+        assert!(updates.automatic);
+        assert!(
+            updates.job.is_none(),
+            "active downloads never start an automatic update"
+        );
+        updates.drive_automatic(rt.handle(), &ctx, false, true);
+        assert!(!updates.automatic);
+        assert!(
+            updates.job.is_none(),
+            "disabling updates cancels the pending automatic attempt"
+        );
+
+        let mut updates = Updates::automatic(release);
+        updates.drive_automatic(rt.handle(), &ctx, true, true);
+        assert!(
+            updates.job.is_none(),
+            "an unsigned release never starts an update"
+        );
+        assert!(matches!(updates.status, Some(UpdateStatus::Failed(_))));
+    }
 
     #[test]
     fn versions_compare_by_number() {

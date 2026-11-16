@@ -40,8 +40,6 @@ craft-i18n.workspace = true
 # misterdownloadmanager-cli's commands: its launcher runs this program for them (main.rs).
 mdm-cli.workspace = true
 mdm-engine.workspace = true
-mdm-extract.workspace = true
-mdm-geo.workspace = true
 mdm-ipc.workspace = true
 # The remote control (#141): a paired phone adds and controls downloads over the local network.
 mdm-remote.workspace = true
@@ -63,22 +61,13 @@ unicode-segmentation = "1.13.3"
 # The text MDM hands to the system: isolates made into marks by each letter's direction (#919).
 unicode-bidi = "0.3.18"
 # Crash and freeze reports: the monitor, minidumps, symbolicated stacks, release logs.
-mdm-cnl.workspace = true
 mdm-crash.workspace = true
 mdm-debrid.workspace = true
 tracing.workspace = true
-# Unpacks the translation catalogs (i18n.rs, packed by build.rs); already in the tree through
-# reqwest's brotli support.
-brotli-decompressor = "6.2.0"
-# RSS feeds (rss.rs): reading them (no DTDs), and the rules' regular expressions; both already
-# in the tree (resvg's SVG, the engine's dependencies).
-roxmltree = "0.20.0"
-regex = "1.13.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
-# Windows can draw with Direct3D 12 instead of OpenGL (#89, renderer.rs): eframe's wgpu renderer
-# with wgpu's Direct3D 12 backend only (no Vulkan, no GL: OpenGL stays eframe's glow).
+# This Windows build uses Direct3D 12 only, with WARP as its software fallback.
 eframe = { workspace = true, features = ["wgpu_no_default_features"] }
 # Cargo.lock keeps gpu-allocator (wgpu-hal's) on wgpu-hal's windows 0.62: its range allows 0.61 too,
 # which win32job uses, and wgpu-hal doesn't build with that one.
@@ -102,7 +91,7 @@ egui_system_font_provider.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # View → Draw with → Vulkan (#206, renderer.rs): eframe's wgpu renderer with wgpu's Vulkan backend
 # only (Wayland and X11 windows; no GL backend: OpenGL stays eframe's glow, and the default).
-eframe = { workspace = true, features = ["wayland", "x11", "wgpu_no_default_features"] }
+eframe = { workspace = true, features = ["glow", "wayland", "x11", "wgpu_no_default_features"] }
 wgpu = { version = "30.0", default-features = false, features = ["vulkan", "wgsl"] }
 # Choosing X11 (XWayland) over Wayland when both are there (unix.rs prefer_x11, #50); the
 # workspace's patched winit, as eframe's.
@@ -130,7 +119,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 # View → Draw with → Metal (#206, renderer.rs): eframe's wgpu renderer with wgpu's Metal backend
 # only; OpenGL stays eframe's glow, and the default. egui-wgpu's fix for windows that jitter while
 # they are resized (Core Animation presenting with the resize), as upstream egui turns it on.
-eframe = { workspace = true, features = ["wgpu_no_default_features"] }
+eframe = { workspace = true, features = ["glow", "wgpu_no_default_features"] }
 wgpu = { version = "30.0", default-features = false, features = ["metal", "wgsl"] }
 egui-wgpu = { version = "0.37.0", default-features = false, features = ["macos-window-resize-jitter-fix"] }
 # Sign-in secrets in the login keychain (unix.rs, #44); already in the tree through rustls's
@@ -141,16 +130,14 @@ security-framework = "3.7.0"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
-[build-dependencies]
-# Packs the translation catalogs (build.rs).
-brotli = "9.1.1"
-
 [target.'cfg(windows)'.build-dependencies]
 # Embeds the exe icon and version info (build.rs).
 winresource = "0.1"
 
 [dev-dependencies]
 tempfile.workspace = true
+# Documentation-reference checks only; RSS no longer brings this into the application.
+regex = "1.13.1"
 # secrets.rs's test that no secret reaches the log.
 tracing-subscriber.workspace = true
 # The command line's tests (tests/cli_*.rs) download from it.

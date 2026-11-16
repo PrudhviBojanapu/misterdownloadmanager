@@ -373,8 +373,9 @@ push to `main`, or from **Actions -> Windows release -> Run workflow** on `main`
 window/duplicate regression tests, extension checks and a real download smoke test, then publishes
 the installer, portable ZIP, plain ZIP and SHA-256 checksums on this fork's **Releases** page.
 Each build gets a unique `windows-v<version>-<run>.<attempt>` tag; it does not run the inherited
-multi-platform release workflow or publish extensions to any store. The inherited workflows
-are disabled in this fork's Actions settings, not removed from the source.
+multi-platform release workflow or publish extensions to any store. Before enabling it, disable
+the inherited workflows in this fork's Actions settings; their source files are kept for upstream
+syncs.
 
 The workflow uses standard `windows-2022` GitHub-hosted runners, free for public repositories.
 Runtime and concurrency limits still apply; larger runners are not free. Build dependencies are

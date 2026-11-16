@@ -35,10 +35,10 @@ use sha2::{Digest, Sha256};
 
 /// yt-dlp's release signing key, from its repository (`public.key`).
 const YTDLP_KEY: &str = include_str!("../keys/yt-dlp.asc");
-/// Mister Download Manager's release signing key (Ed25519, fingerprint
-/// 5826D399249DE856EA087D802E293C28E8A69D74): release.yml signs each release's SHA256SUMS.txt
-/// with it (the MDM_RELEASE_KEY secret), and MDM updates itself only from a list it signed.
-const MDM_KEY: &str = include_str!("../keys/mdm-release.asc");
+/// This fork's release signing key (E7029305EBD69B1B16FB13960AC0D17698AC4E20).
+/// Upstream's key must never authorize updates from a different publisher.
+/// See docs/windows-release.md for the required public key and CI private-key setup.
+const MDM_KEY: &str = include_str!("../keys/fork-release.asc");
 /// Where releases come from.
 const RELEASES: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 
@@ -498,16 +498,33 @@ mod tests {
     }
 
     #[test]
-    fn mdm_releases_are_checked_against_mdms_own_key() {
+    fn upstream_releases_cannot_authorize_fork_updates() {
         let sums = include_bytes!("../tests/fixtures/mdm-SHA256SUMS.txt");
         let sig = include_bytes!("../tests/fixtures/mdm-SHA256SUMS.txt.sig");
-        assert!(signed_by_mdm(sums, sig));
+        assert!(signed_by(
+            include_str!("../keys/mdm-release.asc"),
+            sums,
+            sig
+        ));
+        assert!(!signed_by_mdm(sums, sig));
         let mut forged = sums.to_vec();
         forged[0] = if forged[0] == b'0' { b'1' } else { b'0' };
         assert!(!signed_by_mdm(&forged, sig));
         // Each key signs for itself only.
         assert!(!signed_by_ytdlp(sums, sig));
         assert!(!signed_by_mdm(SUMS, SIG));
+    }
+
+    #[test]
+    fn fork_signing_proof_is_valid_only_without_tampering() {
+        let proof = include_bytes!("../tests/fixtures/fork-key-proof.txt");
+        let sig = include_bytes!("../tests/fixtures/fork-key-proof.txt.sig");
+        assert!(signed_by_mdm(proof, sig));
+        let mut changed = proof.to_vec();
+        changed[0] ^= 1;
+        assert!(!signed_by_mdm(&changed, sig));
+        assert!(!signed_by_mdm(proof, b"not a signature"));
+        assert!(sum_for(std::str::from_utf8(proof).unwrap(), "anything.exe").is_none());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! Only connections from 127.0.0.1 with the right token are accepted.
 
 pub mod api;
+pub mod automation;
 pub mod browsers;
 pub mod capture;
 pub mod extension;
@@ -21,6 +22,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Command {
+    /// Typed non-interactive automation. Never opens a modal dialog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<automation::Operation>,
     /// The URL to download (`/d`).
     pub url: Option<String>,
     /// Save folder (`/p`) and file name (`/f`).
@@ -239,7 +243,8 @@ pub struct VideoPick {
 impl Command {
     /// Asks for an answer (a JSON line) rather than "ok".
     pub fn wants_reply(&self) -> bool {
-        self.query.is_some()
+        self.operation.is_some()
+            || self.query.is_some()
             || self.api.is_some()
             || self.action.is_some()
             || self.pair

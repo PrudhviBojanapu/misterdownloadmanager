@@ -176,7 +176,7 @@ pub(crate) fn text_of_class(page: &str, class: &str) -> Option<String> {
 /// "Download all links": each `<a href>` and `<area href>`, and each `<video src>`, `<audio src>`
 /// and `<source src>`, in the page's order. Each is read as the browser reads it: references
 /// decoded, against the page's `<base href>` or else `at` (the address the page came from),
-/// without its `#fragment`, and once. Only what can be downloaded: http(s), ftp(s) and magnet
+/// without its `#fragment`, and once. Only what can be downloaded: HTTP(S) and magnet
 /// links (not `mailto:`, `javascript:`, `data:`). Comments, scripts and styles aren't markup:
 /// an address in them isn't a link.
 pub fn links(page: &str, at: &Url) -> Vec<Url> {
@@ -638,7 +638,6 @@ mod tests {
                 "https://example.com/up.zip",
                 "https://cdn.example.net/a.zip?x=1&y=2",
                 "https://example.com/dir/page.html",
-                "ftp://ftp.example.org/pub/f.tar.gz",
                 "magnet:?xt=urn:btih:abc&dn=x",
                 "https://example.com/dir/map.zip",
                 "https://example.com/dir/clip.mp4",

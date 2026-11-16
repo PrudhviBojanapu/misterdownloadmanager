@@ -78,11 +78,7 @@ pub fn describe(e: &Error) -> String {
             t("the file's {algorithm} checksum doesn't match (the data is kept; redownload it)"),
             &[("algorithm", &ltr(algorithm))],
         ),
-        Error::FtpReply { code, text } => fmt(
-            // i18n: {code} is the FTP server's reply number (such as 550), {reply} the words it sent with it (left as sent)
-            t("the FTP server answered {code} {reply}"),
-            &[("code", &ltr(&code.to_string())), ("reply", &ltr(text))],
-        ),
+        Error::UnsupportedScheme(_) => e.to_string(),
         Error::Refused(r) => refusal(r),
         Error::NoCertificates => {
             // i18n: a download's error on a computer (a minimal Linux) without the certificates that secure connections check servers with; "ca-certificates" is the package's name, left as is

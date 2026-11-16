@@ -307,6 +307,44 @@ const ok = (what) => {
   console.log(`ok - ${what}`);
 };
 
+// GitHub updates arrive through the signed app package, never as remotely fetched code.
+{
+  for (const [disk, installType, reloads] of [
+    ["0.2.6", "development", 1],
+    ["0.2.5.1", "development", 1],
+    ["0.2.5", "development", 0],
+    ["0.2.4", "development", 0],
+    ["invalid", "development", 0],
+    ["0.2.6", "normal", 0],
+  ]) {
+    const { api, calls } = fakeApi({});
+    api.management = { getSelf: async () => ({ installType }) };
+    api.runtime.reload = () => calls.push(["reload"]);
+    const fetched = [];
+    const ctx = load(api, false, {
+      fetch: async (url, options) => {
+        fetched.push([url, options.cache]);
+        return { ok: true, json: async () => ({ version: disk }) };
+      },
+      setTimeout: (callback, ms) => setTimeout(callback, ms === 10000 ? 0 : ms),
+    });
+    await ctx.checkBundledUpdate();
+    assert.equal(calls.filter(([kind]) => kind === "reload").length, reloads, `${disk}, ${installType}`);
+    assert.ok(fetched.every(([url, cache]) => url === api.runtime.getURL("manifest.json") && cache === "no-store"));
+  }
+  const { api, calls } = fakeApi({});
+  api.management = { getSelf: async () => ({ installType: "development" }) };
+  api.runtime.reload = () => calls.push(["reload"]);
+  let reads = 0;
+  const ctx = load(api, false, {
+    fetch: async () => ({ ok: true, json: async () => ({ version: ++reads === 1 ? "0.2.6" : "0.2.7" }) }),
+    setTimeout: (callback, ms) => setTimeout(callback, ms === 10000 ? 0 : ms),
+  });
+  await ctx.checkBundledUpdate();
+  assert.equal(calls.filter(([kind]) => kind === "reload").length, 0, "an installation still changing is not reloaded");
+  ok("bundled updates reload only a newer, stable, local unpacked extension");
+}
+
 // Firefox: a .zip in a container is taken over with that container's cookies and the browser's
 // name, size and type; every message says which browser and version it comes from.
 {

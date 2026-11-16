@@ -5,6 +5,29 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+### Local Windows fixes
+
+- Native window dragging coalesces position-only notifications instead of repainting every
+  viewport at each mouse movement. Windows still moves the window immediately; the final
+  position reaches the UI when the drag ends. Download updates, resizing and DPI changes
+  continue normally.
+- Download progress windows have native resize borders and resize cursors. The title bar
+  follows the window width; status text, progress bars and connection details use the extra
+  width, and a taller window shows more connections. Smaller windows keep scrolling access
+  to the original controls.
+
+### Local download fixes
+
+- Interactive file downloads check the intended destination against both saved downloads
+  and disk files, even when a signed URL changes. The existing duplicate-download dialog,
+  rather than a separate popup, asks
+  whether to skip, use a numbered name, overwrite, or use/resume an unfinished download.
+  Running downloads cannot be overwritten. Resume keeps the existing segments and
+  validators and refreshes the address; missing or incompatible partial data disables it.
+  Overwrite discards partial data only after confirmation and preserves a completed file
+  until its replacement succeeds. Browser automatic starts use the same check; explicitly
+  silent command-line downloads retain their scripting behavior.
+
 ### Added
 
 - **Button size for the Download video button:** **Options → General → Customize MDM Download panels in browsers → Edit...** has **Button size**: **Full** (as installed: the logo, **Download video** and the quality, shrinking to the round button only on a small video or where its words wouldn't fit) or **Compact**, the round button (MDM's logo, the arrow for its list and **✕**) over every video, whatever its size. After a click it still says what happened in words. A change reaches pages already open within a few seconds, without reloading them ([#1278](https://github.com/anefzaoui/misterdownloadmanager/issues/1278)).
@@ -254,6 +277,36 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 - Left click on the tray icon now toggles the main window: hidden or minimized shows it again, in front hides it to the tray, and behind other windows brings it forward (it only ever showed it, so clicking while the window was visible did nothing). On Windows it goes by what covers the window, so it works with the icon under the taskbar's ^ too.
 - A download started in the browser (a video's download button, a link, a magnet or .torrent) now opens only its dialog when the main window is hidden or minimized, instead of always bringing the full window up.
 
+
+## [0.5.5]
+
+### Windows fork
+
+- The download list opens sorted newest first (the Added column, descending), so new and
+  running downloads sit at the top. Clicking a column header still changes the sort.
+
+## [0.5.4]
+
+### Windows fork
+
+- Rebased on the latest upstream (CLI `start-queue`/`stop-queue`).
+- Confirms the automatic update path: an installed 0.5.3 finds this signed release on the
+  fork, installs it silently once idle, restarts, and the bundled Edge extension reloads
+  itself to the new version.
+
+## [0.5.3]
+
+### Windows fork
+
+- Automatic app updates use this fork's GitHub releases and pinned release-signing key.
+  Installation waits until downloads, active queues and file moves/renames have been idle
+  for 30 seconds; active downloads are not interrupted by an automatic restart.
+- The bundled unpacked Edge extension detects a newer local version and reloads itself.
+  Extension files arrive with the verified app update, not as remotely loaded scripts.
+  Load `{app}\extension\chromium` once; a separately extracted extension ZIP is not linked
+  to the installed app and must be replaced manually.
+- English/Edge-only Windows x64 packaging, dark Metro with colorful icons, retained-feature
+  CLI/MCP automation, and the approved lean feature set.
 
 ## [0.5.2] - 2026-11-09
 

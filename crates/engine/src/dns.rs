@@ -418,7 +418,7 @@ async fn build(
         }
         return Err(setup("no server given".into()));
     }
-    let tls = crate::ftp::client_config(extra_roots).map_err(|e| setup(e.to_string()))?;
+    let tls = crate::tls::client_config(extra_roots).map_err(|e| setup(e.to_string()))?;
     let mut builder = DnsResolver::builder_with_config(
         ResolverConfig::from_name_servers(servers),
         Through {

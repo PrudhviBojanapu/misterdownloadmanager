@@ -534,10 +534,11 @@ mod tests {
             batch("http://x/*/*.jpg").expand().is_empty(),
             "one asterisk only"
         );
-        assert_eq!(
-            batch("ftp://x/*.jpg").expand().len(),
-            11,
-            "ftp addresses too"
-        );
+        for scheme in ["http", "https"] {
+            assert_eq!(batch(&format!("{scheme}://x/*.jpg")).expand().len(), 11);
+        }
+        for scheme in ["ftp", "ftps", "ftpes"] {
+            assert!(batch(&format!("{scheme}://x/*.jpg")).expand().is_empty());
+        }
     }
 }

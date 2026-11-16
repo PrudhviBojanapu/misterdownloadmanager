@@ -328,11 +328,13 @@ static SETS: LazyLock<Mutex<HashMap<String, Arc<Set>>>> = LazyLock::new(|| {
         32: ["ui-to-tray-symbolic.png"];
         48: ["ui-to-tray-symbolic.png"]);
     sets.insert("metro".to_owned(), Arc::new(Set::from_files(metro, true)));
-    // GNOME's adwaita-icon-theme 51.0 (LGPL-3, assets/themes/adwaita/icons/LICENSE), its files
-    // as GNOME ships them: colour pictures at 16 pixels and drawings above, one-colour symbolic
-    // icons tinted. The PDF, torrent-file and Hide to the notification area icons are MDM's
-    // own, in its style.
-    let adwaita = builtin_files!("adwaita";
+    #[cfg(test)]
+    {
+        // GNOME's adwaita-icon-theme 51.0 (LGPL-3, assets/themes/adwaita/icons/LICENSE), its files
+        // as GNOME ships them: colour pictures at 16 pixels and drawings above, one-colour symbolic
+        // icons tinted. The PDF, torrent-file and Hide to the notification area icons are MDM's
+        // own, in its style.
+        let adwaita = builtin_files!("adwaita";
         16: ["cat-all.png", "cat-compressed.png", "cat-documents.png", "cat-finished.png",
             "cat-folder-open-symbolic.svg", "cat-folder.png", "cat-music.png", "cat-programs.png",
             "cat-queues-symbolic.svg", "cat-torrents.png", "cat-unfinished.png", "cat-video.png",
@@ -366,15 +368,15 @@ static SETS: LazyLock<Mutex<HashMap<String, Arc<Set>>>> = LazyLock::new(|| {
             "ui-minimize-symbolic.svg", "ui-restore-symbolic.svg", "ui-to-tray-symbolic.png"];
         32: ["ft-pdf.png", "ft-torrent.png", "ui-to-tray-symbolic.png"];
         48: ["ft-pdf.png", "ft-torrent.png", "ui-to-tray-symbolic.png"]);
-    sets.insert(
-        "adwaita".to_owned(),
-        Arc::new(Set::from_files(adwaita, false)),
-    );
-    // KDE's breeze-icons 6.31 (LGPL-3.0-or-later, assets/themes/breeze/icons/LICENSE), its files
-    // as KDE ships them: colour drawings for files and categories, one-colour icons (its
-    // ColorScheme-Text ones) in the theme's ink, their highlight and warning colours kept. The
-    // PDF and Hide to the notification area icons are MDM's own, in its style.
-    let breeze = builtin_files!("breeze";
+        sets.insert(
+            "adwaita".to_owned(),
+            Arc::new(Set::from_files(adwaita, false)),
+        );
+        // KDE's breeze-icons 6.31 (LGPL-3.0-or-later, assets/themes/breeze/icons/LICENSE), its files
+        // as KDE ships them: colour drawings for files and categories, one-colour icons (its
+        // ColorScheme-Text ones) in the theme's ink, their highlight and warning colours kept. The
+        // PDF and Hide to the notification area icons are MDM's own, in its style.
+        let breeze = builtin_files!("breeze";
         16: ["cat-all-symbolic.svg", "cat-compressed.svg", "cat-documents.svg",
             "cat-finished-symbolic.svg", "cat-folder-open-symbolic.svg", "cat-folder-symbolic.svg",
             "cat-music.svg", "cat-programs-symbolic.svg", "cat-queues-symbolic.svg",
@@ -408,14 +410,14 @@ static SETS: LazyLock<Mutex<HashMap<String, Arc<Set>>>> = LazyLock::new(|| {
             "ui-restore-symbolic.svg", "ui-to-tray-symbolic.png"];
         32: ["ft-pdf.png", "ui-to-tray-symbolic.png"];
         48: ["ft-pdf.png", "ui-to-tray-symbolic.png"]);
-    sets.insert(
-        "breeze".to_owned(),
-        Arc::new(Set::from_files(breeze, false)),
-    );
-    // The era themes' sets (#45): pictures drawn for MDM in the manner of Windows XP, Windows 7
-    // and Mac OS X, in colour, at 16, 24, 32 and 48 pixels. The title bar's buttons are MDM's own
-    // vector glyphs (drawn by `winui::caption`), but for Hide to the notification area.
-    let luna = builtin_files!("luna";
+        sets.insert(
+            "breeze".to_owned(),
+            Arc::new(Set::from_files(breeze, false)),
+        );
+        // The era themes' sets (#45): pictures drawn for MDM in the manner of Windows XP, Windows 7
+        // and Mac OS X, in colour, at 16, 24, 32 and 48 pixels. The title bar's buttons are MDM's own
+        // vector glyphs (drawn by `winui::caption`), but for Hide to the notification area.
+        let luna = builtin_files!("luna";
         16: ["cat-all.png", "cat-compressed.png", "cat-documents.png", "cat-finished.png",
             "cat-folder-open.png", "cat-folder.png", "cat-music.png", "cat-programs.png",
             "cat-queues.png", "cat-torrents.png", "cat-unfinished.png", "cat-video.png",
@@ -464,8 +466,8 @@ static SETS: LazyLock<Mutex<HashMap<String, Arc<Set>>>> = LazyLock::new(|| {
             "tb-delete-completed.png", "tb-delete.png", "tb-options.png", "tb-resume.png",
             "tb-scheduler.png", "tb-start-queue.png", "tb-stop-all.png", "tb-stop-queue.png",
             "tb-stop.png", "ui-to-tray.png"]);
-    sets.insert("luna".to_owned(), Arc::new(Set::from_files(luna, false)));
-    let aero = builtin_files!("aero";
+        sets.insert("luna".to_owned(), Arc::new(Set::from_files(luna, false)));
+        let aero = builtin_files!("aero";
         16: ["cat-all.png", "cat-compressed.png", "cat-documents.png", "cat-finished.png",
             "cat-folder-open.png", "cat-folder.png", "cat-music.png", "cat-programs.png",
             "cat-queues.png", "cat-torrents.png", "cat-unfinished.png", "cat-video.png",
@@ -514,8 +516,8 @@ static SETS: LazyLock<Mutex<HashMap<String, Arc<Set>>>> = LazyLock::new(|| {
             "tb-delete-completed.png", "tb-delete.png", "tb-options.png", "tb-resume.png",
             "tb-scheduler.png", "tb-start-queue.png", "tb-stop-all.png", "tb-stop-queue.png",
             "tb-stop.png", "ui-to-tray.png"]);
-    sets.insert("aero".to_owned(), Arc::new(Set::from_files(aero, false)));
-    let aqua = builtin_files!("aqua";
+        sets.insert("aero".to_owned(), Arc::new(Set::from_files(aero, false)));
+        let aqua = builtin_files!("aqua";
         16: ["cat-all.png", "cat-compressed.png", "cat-documents.png", "cat-finished.png",
             "cat-folder-open.png", "cat-folder.png", "cat-music.png", "cat-programs.png",
             "cat-queues.png", "cat-torrents.png", "cat-unfinished.png", "cat-video.png",
@@ -564,7 +566,8 @@ static SETS: LazyLock<Mutex<HashMap<String, Arc<Set>>>> = LazyLock::new(|| {
             "tb-delete-completed.png", "tb-delete.png", "tb-options.png", "tb-resume.png",
             "tb-scheduler.png", "tb-start-queue.png", "tb-stop-all.png", "tb-stop-queue.png",
             "tb-stop.png", "ui-to-tray.png"]);
-    sets.insert("aqua".to_owned(), Arc::new(Set::from_files(aqua, false)));
+        sets.insert("aqua".to_owned(), Arc::new(Set::from_files(aqua, false)));
+    }
     Mutex::new(sets)
 });
 
@@ -640,6 +643,11 @@ pub fn source(
         static MADE: RefCell<HashMap<Key, Option<(ImageSource<'static>, Paint)>>> = RefCell::default();
     }
     let name = crate::theme::current().icon_set.clone()?;
+    let ink = if enabled && name == "metro" {
+        metro_ink(need).unwrap_or(ink)
+    } else {
+        ink
+    };
     let [r, g, b, a] = ink.to_srgba_unmultiplied();
     let (src, paint) = MADE.with(|made| {
         made.borrow_mut()
@@ -685,6 +693,33 @@ pub fn source(
         (Paint::Colour, false) => Color32::WHITE.gamma_multiply(0.45),
     };
     Some((src, tint))
+}
+
+fn metro_ink(need: &str) -> Option<Color32> {
+    let rgb = match need {
+        "tb-add-url" | "tb-resume" | "tb-start-queue" | "st-complete" | "misc-emblem-ok"
+        | "cat-finished" => [108, 203, 95],
+        "tb-add-torrent" | "cat-torrents" | "ft-torrent" | "st-seeding" => [195, 160, 255],
+        "tb-stop"
+        | "tb-stop-all"
+        | "tb-stop-queue"
+        | "tb-delete"
+        | "tb-delete-completed"
+        | "st-error"
+        | "misc-remove" => [255, 139, 148],
+        "st-paused" | "cat-unfinished" | "cat-compressed" | "cat-folder" | "cat-folder-open"
+        | "ft-archive" => [245, 196, 89],
+        "cat-music" | "ft-audio" | "cat-video" | "ft-video" => [241, 150, 211],
+        n if n.starts_with("cat-")
+            || n.starts_with("ft-")
+            || n.starts_with("st-")
+            || n == "tb-options" =>
+        {
+            [102, 195, 255]
+        }
+        _ => return None,
+    };
+    Some(Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
 }
 
 /// Paints the active theme's icon for `need` into `rc` (enabled or greyed); false when the theme

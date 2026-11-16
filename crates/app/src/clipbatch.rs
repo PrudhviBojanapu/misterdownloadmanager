@@ -242,13 +242,18 @@ mod tests {
             "https://media.example.org/show/ep01.mp4",
             "https://x.example/My%20Show%2005.mp4",
             "https://x.example/movie.7z.001",
-            "ftp://x.example/pub/disk9.iso",
+            "http://x.example/pub/disk9.iso",
         ] {
             let p = numbered(one).unwrap();
             let first = p
                 .address
                 .replacen('*', &format!("{:0w$}", p.from, w = p.width), 1);
             assert_eq!(first, one);
+        }
+        for scheme in ["ftp", "ftps", "ftpes"] {
+            let address = format!("{scheme}://x.example/pub/disk9.iso");
+            assert_eq!(numbered(&address), None);
+            assert_eq!(read(Some(&address)), Clip::NoLinks);
         }
     }
 }

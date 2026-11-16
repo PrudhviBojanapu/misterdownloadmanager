@@ -32,6 +32,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -51,6 +52,7 @@ jobs:
           path: target/site
 
   deploy:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     needs: build
     runs-on: ubuntu-latest
     permissions:

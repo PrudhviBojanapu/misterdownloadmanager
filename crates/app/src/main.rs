@@ -22,6 +22,7 @@ mod droptarget;
 mod errors;
 mod extension;
 mod extractq;
+mod filecollision;
 mod fileicons;
 mod find;
 mod finish;

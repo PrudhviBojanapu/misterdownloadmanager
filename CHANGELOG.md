@@ -5,6 +5,29 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+### Local Windows fixes
+
+- Native window dragging coalesces position-only notifications instead of repainting every
+  viewport at each mouse movement. Windows still moves the window immediately; the final
+  position reaches the UI when the drag ends. Download updates, resizing and DPI changes
+  continue normally.
+- Download progress windows have native resize borders and resize cursors. The title bar
+  follows the window width; status text, progress bars and connection details use the extra
+  width, and a taller window shows more connections. Smaller windows keep scrolling access
+  to the original controls.
+
+### Local download fixes
+
+- Interactive file downloads check the intended destination against both saved downloads
+  and disk files, even when a signed URL changes. The existing duplicate-download dialog,
+  rather than a separate popup, asks
+  whether to skip, use a numbered name, overwrite, or use/resume an unfinished download.
+  Running downloads cannot be overwritten. Resume keeps the existing segments and
+  validators and refreshes the address; missing or incompatible partial data disables it.
+  Overwrite discards partial data only after confirmation and preserves a completed file
+  until its replacement succeeds. Browser automatic starts use the same check; explicitly
+  silent command-line downloads retain their scripting behavior.
+
 ### Added
 
 - **Drag files out of the list** (Windows): drag finished downloads from the main window's list onto a folder, a program (a player, an archive tool) or a chat to drop their files there, one or several at once, as from Explorer: moved to a folder on the same drive (or with **Shift** held), copied to another drive (or with **Ctrl** held), a shortcut with **Alt**. Only **Download complete**'s grip did this. The drag starts once the pointer moves a few pixels with the button held on a row, so a click still selects and a double-click opens; dragging a row not selected selects it first. Downloads that haven't finished stay behind, and a selection of only those drags nothing. A moved file is followed as from **Download complete**: its download points to the new place, and where MDM can't learn where it went, **Open** and **Open folder** say so. The drag runs beside the window, so MDM's windows go on while it lasts, and a file dropped back on MDM's own window isn't taken for something to download. Not on macOS and Linux yet: their window library has no way to drag files out of a window ([#1210](https://github.com/anefzaoui/misterdownloadmanager/issues/1210)).

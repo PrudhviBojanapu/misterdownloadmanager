@@ -41,8 +41,6 @@ pub(crate) enum View {
 enum Pending {
     /// From the browser or the command line.
     Command(Box<ipc::Command>),
-    /// From Add URL.
-    Url(dialogs::NewUrl),
     /// A video from Download video from a page, or the browser's quality menu (`true`), with
     /// the menu's look-up: it goes with the new download only, never to the one already there.
     Video(Box<crate::videodlg::VideoAdd>, bool),
@@ -518,7 +516,7 @@ fn cant_move_notice() -> (&'static str, String) {
 /// Where one download of a selection goes in `dir`: a name free there (on disk, what
 /// `naming::destination` checks) and not one the selection has taken (two not started under one
 /// name have no file yet to be seen).
-fn place_in(
+pub(crate) fn place_in(
     dir: &std::path::Path,
     name: &str,
     taken: &mut std::collections::HashSet<PathBuf>,
@@ -529,10 +527,14 @@ fn place_in(
     };
     let mut at = mdm_engine::naming::destination(dir, name);
     let mut n = 1u32;
-    while !taken.insert(at.clone()) {
+    while taken
+        .iter()
+        .any(|p| crate::filecollision::same_path(p, &at))
+    {
         at = mdm_engine::naming::destination(dir, &format!("{stem} ({n}){ext}"));
         n += 1;
     }
+    taken.insert(at.clone());
     at
 }
 
@@ -1073,6 +1075,7 @@ pub struct App {
     queues_open: bool,
     add_url: Option<AddUrl>,
     file_info: Option<FileInfo>,
+    file_collision: Option<crate::filecollision::PendingFile>,
     /// Addresses (and their browser context) waiting for Download File Info to close.
     file_info_waiting: std::collections::VecDeque<(dialogs::NewUrl, ipc::Command)>,
     /// Download File Info's open answers, for the download each was given to (by id) to start
@@ -1855,6 +1858,7 @@ impl App {
             started: Instant::now(),
             update_checked_this_run: None,
             file_info: None,
+            file_collision: None,
             file_info_waiting: Default::default(),
             kept_answers: Default::default(),
             progress: Vec::new(),
@@ -2396,7 +2400,19 @@ impl App {
             self.start(id, true);
         } else {
             // "Download Later": the main download queue (IDM's default), or the one picked.
-            self.queue_later(vec![id], self.settings.queue_panel_later);
+            if let Some(q) = fi
+                .context
+                .queue
+                .as_ref()
+                .and_then(|name| self.queues.iter().position(|q| q.name == *name))
+            {
+                self.queues[q].items.push(id);
+            } else {
+                self.queue_later(
+                    vec![id],
+                    fi.automatic.is_none() && self.settings.queue_panel_later,
+                );
+            }
         }
         self.dirty = true;
     }
@@ -2404,8 +2420,20 @@ impl App {
     /// Options → Downloads → "Start downloading immediately while displaying Download File
     /// Info": once the address answered (name and size known) and its folder exists, the
     /// download starts behind the dialog; the dialog's answer then keeps, moves or drops it.
-    fn start_early(&mut self, fi: &mut FileInfo) {
-        if !self.settings.start_immediately || fi.early.is_some() || !fi.probed() {
+    fn start_early(&mut self, fi: &mut FileInfo, ctx: &egui::Context) {
+        if !self.settings.start_immediately
+            || fi.early.is_some()
+            || fi.automatic.is_some()
+            || !fi.probed()
+        {
+            return;
+        }
+        if self
+            .items
+            .iter()
+            .any(|i| crate::filecollision::same_path(&i.dest, &fi.dest()))
+            || !fi.collision_free(ctx)
+        {
             return;
         }
         // Once Save As has been looked at off the window's thread (#743): its name numbered in
@@ -3388,12 +3416,12 @@ impl App {
             );
             return;
         }
-        if !self.duplicate_gate(&url, || Pending::Command(Box::new(cmd.clone()))) {
+        if cmd.silent && !self.duplicate_gate(&url, || Pending::Command(Box::new(cmd.clone()))) {
             return;
         }
         // Options → Downloads → "Show start download dialog" off: start (or only queue) at once.
         let skip_dialog = !self.settings.show_start_dialog;
-        if cmd.later || cmd.silent || skip_dialog {
+        if cmd.silent {
             let guessed = cmd.name.is_none();
             let name = cmd
                 .name
@@ -7851,7 +7879,11 @@ impl App {
         self.tick_queues();
         // A download started early behind Download File Info stays quiet until the dialog's
         // answer (Start shows its box then; Cancel drops it).
-        let early = self.file_info.as_ref().and_then(|f| f.early);
+        let early = self
+            .file_info
+            .as_ref()
+            .and_then(|f| f.early)
+            .or_else(|| self.file_collision.as_ref().and_then(|p| p.fi.early));
         let close = finished_windows(
             finished,
             |id| self.progress.iter().any(|p| p.id == id && !p.hidden),
@@ -9766,7 +9798,7 @@ impl App {
     /// line. One at a time: another that arrives meanwhile waits its turn (the browser has
     /// already given its own copy up, so none may be dropped).
     fn open_file_info(&mut self, new: dialogs::NewUrl, context: ipc::Command, ctx: &egui::Context) {
-        if self.file_info.is_some() {
+        if self.file_info.is_some() || self.file_collision.is_some() {
             self.file_info_waiting.push_back((new, context));
             return;
         }
@@ -9784,6 +9816,15 @@ impl App {
         );
         fi.remember = self.settings.change_folder_on_last;
         fi.folders = self.settings.folder_history.clone();
+        fi.automatic = if fi.context.later
+            || (!self.settings.show_start_dialog && self.settings.only_add_to_queue)
+        {
+            Some(Start::Later)
+        } else if !self.settings.show_start_dialog {
+            Some(Start::Now)
+        } else {
+            None
+        };
         self.file_info = Some(fi);
     }
 
@@ -9900,7 +9941,7 @@ impl App {
             .map(|i| i.file_name.clone())
             .unwrap_or_default();
         let ask = (dup, pending, dialogs::Duplicate::new(name));
-        if self.duplicate.is_none() {
+        if self.duplicate.is_none() && self.file_collision.is_none() {
             self.duplicate = Some(ask);
         } else {
             self.duplicates_waiting.push_back(ask);
@@ -9980,7 +10021,6 @@ impl App {
                 self.handle_command(*cmd, ctx);
                 self.duplicate_cleared = false;
             }
-            Pending::Url(new) => self.open_file_info(new, Default::default(), ctx),
             Pending::Video(add, from_menu) => self.add_video(*add, from_menu),
         }
     }
@@ -9990,16 +10030,6 @@ impl App {
     fn duplicate_again(&mut self, pending: Pending, ctx: &egui::Context) {
         match pending {
             Pending::Command(cmd) => self.handle_command(*cmd, ctx),
-            Pending::Url(new) => {
-                if self.duplicate_gate(&new.url, || {
-                    Pending::Url(dialogs::NewUrl {
-                        url: new.url.clone(),
-                        login: new.login.clone(),
-                    })
-                }) {
-                    self.open_file_info(new, Default::default(), ctx);
-                }
-            }
             Pending::Video(add, from_menu) => {
                 self.add_video_checked(*add, from_menu);
             }
@@ -10964,9 +10994,105 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         self.help_dialogs(ctx);
+        let file_question = self.file_collision.is_some() && self.duplicate.is_none();
+        if file_question && let Some(mut pending) = self.file_collision.take() {
+            use crate::filecollision::{Existing, Prepared, same_path};
+            let dest = pending.fi.dest();
+            let existing = self
+                .items
+                .iter()
+                .filter(|i| Some(i.id) != pending.fi.early && same_path(&i.dest, &dest))
+                .max_by_key(|i| (i.live.is_some(), i.status != Status::Complete))
+                .map(|i| Existing {
+                    id: i.id,
+                    active: i.live.is_some(),
+                    plain: i.video.is_none()
+                        && i.gallery.is_none()
+                        && i.torrent.is_none()
+                        && i.remote.is_none(),
+                    url: i.url.clone(),
+                });
+            let occupied: Vec<_> = self.items.iter().map(|i| i.dest.clone()).collect();
+            match pending.show(ctx, existing.as_ref(), &occupied) {
+                Outcome::Open => self.file_collision = Some(pending),
+                Outcome::Closed => {
+                    if let Some(id) = pending.fi.early {
+                        self.stop(id);
+                        self.after_stop.push((id, None));
+                    }
+                }
+                Outcome::Done(Prepared::Existing(id)) => {
+                    if let Some(early) = pending.fi.early {
+                        self.stop(early);
+                        self.after_stop.push((early, None));
+                    }
+                    self.open_or_resume(id);
+                }
+                Outcome::Done(Prepared::Resume(saved)) => {
+                    if let Some(early) = pending.fi.early {
+                        self.stop(early);
+                        self.after_stop.push((early, None));
+                    }
+                    let id = existing.map(|e| e.id).unwrap_or_else(|| {
+                        self.push_item(
+                            pending.fi.url.clone(),
+                            dest,
+                            pending.fi.category,
+                            pending.fi.description.clone(),
+                            Some(saved.size),
+                            pending.fi.login.clone(),
+                            pending.fi.context.clone(),
+                            crate::i18n::mark("from the browser"),
+                        )
+                    });
+                    if let Some(i) = self.item(id) {
+                        let private = i.context.private || pending.fi.context.private;
+                        i.url = pending.fi.url.clone();
+                        i.context = pending.fi.context.clone();
+                        i.context.private = private;
+                        i.context.final_url = None;
+                        i.login = pending.fi.login.clone();
+                        i.direct = pending.fi.direct;
+                        i.size = Some(saved.size);
+                        i.downloaded = saved.downloaded();
+                        i.name_from_url = false;
+                        i.number_at_start = false;
+                        i.state_here = None;
+                        i.error = None;
+                        i.status = Status::Stopped;
+                    }
+                    self.state_reads.forget(id);
+                    self.kept_answers.remove(&id);
+                    self.dirty = true;
+                    self.start(id, true);
+                }
+                Outcome::Done(prepared) => {
+                    if let Prepared::Numbered(path) = &prepared {
+                        pending.fi.numbered_copy(path);
+                    } else if prepared == Prepared::Overwrite {
+                        pending.fi.replace_on_success();
+                        let ids: Vec<_> = self
+                            .items
+                            .iter()
+                            .filter(|i| i.live.is_none() && same_path(&i.dest, &pending.fi.dest()))
+                            .map(|i| i.id)
+                            .collect();
+                        for id in ids {
+                            self.delete(id);
+                        }
+                    }
+                    if let Some(id) = pending.fi.early {
+                        self.adopt_early(&pending.fi, id, pending.start);
+                    } else {
+                        self.add(&mut pending.fi, pending.start);
+                    }
+                }
+            }
+        }
         // The next question in turn; one about a download that has left the list meanwhile is
         // checked afresh instead (it may ask again, about another).
-        while self.duplicate.is_none()
+        while !file_question
+            && self.duplicate.is_none()
             && let Some((dup, pending, d)) = self.duplicates_waiting.pop_front()
         {
             if self.items.iter().any(|i| i.id == dup) {
@@ -10975,7 +11101,7 @@ impl App {
                 self.duplicate_again(pending, ctx);
             }
         }
-        if let Some((_, _, d)) = &mut self.duplicate {
+        if !file_question && let Some((_, _, d)) = &mut self.duplicate {
             match d.show(ctx) {
                 Outcome::Open => {}
                 Outcome::Closed => self.duplicate = None,
@@ -11162,15 +11288,7 @@ impl App {
                 }
                 Outcome::Done(new) => {
                     self.add_url = None;
-                    let url = new.url.clone();
-                    if self.duplicate_gate(&url, || {
-                        Pending::Url(dialogs::NewUrl {
-                            url: new.url.clone(),
-                            login: new.login.clone(),
-                        })
-                    }) {
-                        self.open_file_info(new, Default::default(), ctx);
-                    }
+                    self.open_file_info(new, Default::default(), ctx);
                 }
             }
         }
@@ -11612,7 +11730,7 @@ impl App {
             }
         }
         if let Some(mut fi) = self.file_info.take() {
-            self.start_early(&mut fi);
+            self.start_early(&mut fi, ctx);
             // The downloads waiting their turn behind this one (a browser selection's arrive
             // one by one): Cancel asks whether they are cancelled too (#394).
             fi.waiting = self.file_info_waiting.len();
@@ -11657,14 +11775,23 @@ impl App {
                         self.after_stop.push((id, None));
                     }
                 }
-                Outcome::Done(start) => match fi.early {
-                    Some(id) => self.adopt_early(&fi, id, start),
-                    None => self.add(&mut fi, start),
-                },
+                Outcome::Done(start) => {
+                    if let Some(id) = fi.early
+                        && self.items.iter().any(|i| {
+                            i.id == id && crate::filecollision::same_path(&i.dest, &fi.dest())
+                        })
+                    {
+                        self.adopt_early(&fi, id, start);
+                    } else {
+                        self.file_collision =
+                            Some(crate::filecollision::PendingFile::new(fi, start));
+                    }
+                }
             }
         }
         // The next download that waited for Download File Info.
         if self.file_info.is_none()
+            && self.file_collision.is_none()
             && let Some((new, context)) = self.file_info_waiting.pop_front()
         {
             self.open_file_info(new, context, ctx);

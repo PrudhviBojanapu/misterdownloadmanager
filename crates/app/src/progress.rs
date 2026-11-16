@@ -40,8 +40,8 @@ fn window_title(frac: Option<f64>, name: &str) -> String {
     }
 }
 
-/// The title bar's buttons, from the window's end: Close, Maximize (greyed: a fixed size, as
-/// IDM's), Minimize, and with a tray our "hide to the notification area". None where the system
+/// The title bar's buttons, from the window's end: Close, Maximize (not offered), Minimize,
+/// and with a tray our "hide to the notification area". None where the system
 /// draws the title bar.
 fn caption_buttons(tray: bool) -> Vec<(CaptionButton, bool)> {
     if !cfg!(windows) {
@@ -578,12 +578,8 @@ impl Progress {
             // The taskbar shows it: without isolates (#919).
             .with_title(crate::i18n::os_text(&native_title))
             .with_inner_size(shown)
-            // IDM's progress window has 2 px borders and a fixed size. On Windows the sizing
-            // frame is asked for and win32::progress_frame trims its borders, disables resizing
-            // and gives the caption to the client, which draws it; elsewhere the window is simply
-            // not resizable (its contents are laid out for one size: Show/Hide details switches
-            // between two).
             .with_resizable(cfg!(windows))
+            .with_min_inner_size(crate::dialogs::shown_size(ctx, [360.0, 240.0 + TITLE_H]))
             .with_icon(crate::app_icon())
             .with_maximize_button(false);
         if let Some(p) = crate::dialogs::place(ctx, key, [548.0, 412.0 + drop]) {
@@ -605,13 +601,19 @@ impl Progress {
                     let o = ui.max_rect().min;
                     // The window's width, laid out from the right in a right-to-left
                     // interface (the title bar; the layout under it has its own).
-                    let _surface = winui::Surface::enter(o.x, o.x + shown[0]);
-                    let caption = draw_caption(ui, o, shown[0], &title_now, &buttons, hwnd);
+                    let width = ui.max_rect().width();
+                    let _surface = winui::Surface::enter(o.x, o.x + width);
+                    let caption = draw_caption(ui, o, width, &title_now, &buttons, hwnd);
                     // The layout under the title bar, scrolled when the window is smaller.
                     let below = egui::Rect::from_min_max(o + vec2(0.0, TITLE_H), ui.max_rect().max);
                     let mut rest = ui.new_child(egui::UiBuilder::new().max_rect(below));
-                    let action = crate::dialogs::scroll(&mut rest, key, body, |ui, o| {
-                        let _surface = winui::Surface::enter(o.x, o.x + body[0]);
+                    let content = if cfg!(windows) {
+                        [body[0].max(below.width()), body[1].max(below.height())]
+                    } else {
+                        body
+                    };
+                    let action = crate::dialogs::scroll(&mut rest, key, content, |ui, o| {
+                        let _surface = winui::Surface::enter(o.x, o.x + content[0]);
                         self.body(ui, o, item, snap, frac, (bar, &drawn.segments))
                     });
                     // The system menu's "Hide to the notification area" (Alt+Space).
@@ -668,10 +670,26 @@ impl Progress {
                 .any(|(b, _)| *b == CaptionButton::ToTray)
                 .then(|| crate::i18n::t("Hide to the notification area").to_owned());
             let want: Framed = (shown, (scale * 1000.0).round() as u32, hide);
+            let size = if hwnd.is_some()
+                && ctx.data(|d| {
+                    d.get_temp::<Framed>(key.with("framed"))
+                        .is_some_and(|previous| previous.0 == shown)
+                }) {
+                // Reframing at another DPI or with a translated menu keeps a user's resize.
+                ctx.input_for(vid, |i| {
+                    i.viewport().inner_rect.map(|r| [r.width(), r.height()])
+                })
+                .unwrap_or(shown)
+            } else {
+                shown
+            };
             if self.needs_frame(ctx, key, &want)
-                && let Some(h) = hwnd.map_or_else(
-                    || crate::win32::thin_frame(&native_title, shown, scale, want.2.as_deref()),
-                    |h| crate::win32::thin_frame_on(h, shown, scale, want.2.as_deref()),
+                && let Some(h) = crate::win32::progress_frame(
+                    hwnd,
+                    &native_title,
+                    size,
+                    scale,
+                    want.2.as_deref(),
                 )
             {
                 ctx.data_mut(|d| {
@@ -750,6 +768,9 @@ impl Progress {
         drawn: (f64, &[(u64, f64)]),
     ) -> Action {
         let p = ui.painter().clone();
+        let wider = (ui.max_rect().width() - 548.0).max(0.0);
+        let taller =
+            (ui.max_rect().height() - 412.0 - self.status_drop() - torrent_drop(item)).max(0.0);
         self.sync_rename_from_item(item);
         if let Some(wait) = self.poll_rename_autosave(std::time::Instant::now()) {
             ui.ctx()
@@ -778,7 +799,7 @@ impl Progress {
         // The progress bar: IDM's green on the shared, themed track. After the last byte, while
         // the file is checked or a video joined (#736), it starts again in the accent colour and
         // shows how far that is.
-        let bar = r(lower, 17.0, 180.0, 513.0, 16.0);
+        let bar = r(lower, 17.0, 180.0, 513.0 + wider, 16.0);
         match finishing_fraction(snap) {
             Some(f) => winui::meter_in(&p, bar, f as f32, crate::theme::colors().accent),
             None => winui::meter(&p, bar, drawn.0 as f32),
@@ -810,8 +831,12 @@ impl Progress {
                 30.0,
                 138.0,
             ),
-            (winui::widest_label(&p, &["Pause", "Resume"]), 311.0, 82.0),
-            ("Cancel", 422.0, 73.0),
+            (
+                winui::widest_label(&p, &["Pause", "Resume"]),
+                311.0 + wider,
+                82.0,
+            ),
+            ("Cancel", 422.0 + wider, 73.0),
         ];
         if web_page {
             row.insert(1, (open_label, 176.0, 127.0));
@@ -903,8 +928,8 @@ impl Progress {
                 crate::i18n::t("Start positions and download progress by connections"),
                 winui::TEXT(),
             );
-            segment_bar(&p, lower, item, drawn.1);
-            connections(ui, &p, lower, snap);
+            segment_bar(&p, lower, item, drawn.1, wider);
+            connections(ui, &p, lower, snap, vec2(wider, taller));
         }
         action
     }
@@ -926,11 +951,12 @@ impl Progress {
         .filter(|t| !self.hidden_tabs.contains(&t.0))
         .collect();
         let p = ui.painter().clone();
+        let wider = (ui.max_rect().width() - 548.0).max(0.0);
         let english: Vec<&str> = tabs.iter().map(|t| t.1).collect();
         // The hide button sits here where the system draws the title bar (Linux, macOS; on
         // Windows it's in ours); the tabs end before it (long translations shorten first).
         let tab_button = self.tray && !cfg!(windows);
-        let right = if tab_button { 500.0 } else { 525.0 };
+        let right = if tab_button { 500.0 } else { 525.0 } + wider;
         let light: Vec<winui::LightTab> = winui::tab_row(&p, &english, 20.0, right, 2.0, 8.0)
             .into_iter()
             .zip(tabs.iter())
@@ -943,13 +969,17 @@ impl Progress {
         let current = tabs.iter().position(|t| t.0 == self.tab).unwrap_or(0);
         let drop = self.status_drop();
         // The page: x 18..529, y 28..(171 + drop) (tabs_light's pane starts 20 px under its top).
-        if let Some(i) =
-            winui::tabs_light(ui, o, r(o, 18.0, 8.0, 514.0, 165.0 + drop), &light, current)
-            && tabs[i].0 != self.tab
+        if let Some(i) = winui::tabs_light(
+            ui,
+            o,
+            r(o, 18.0, 8.0, 514.0 + wider, 165.0 + drop),
+            &light,
+            current,
+        ) && tabs[i].0 != self.tab
         {
             self.tab = tabs[i].0;
         }
-        self.tab_row_menu(ui, r(o, 18.0, 6.0, 514.0, 22.0));
+        self.tab_row_menu(ui, r(o, 18.0, 6.0, 514.0 + wider, 22.0));
         // MDM's (#63): IDM puts this in its title bar, which here is the system's own (it takes
         // no buttons of ours), so it sits at the tab row's end, over the page's corner.
         tab_button
@@ -1365,10 +1395,17 @@ impl Progress {
         frac: Option<f64>,
     ) {
         let p = &ui.painter().clone();
+        let wider = (ui.max_rect().width() - 548.0).max(0.0);
         // Long values are cut with "..." at the page edge and shown whole on hover.
         let fit = |ui: &Ui, key: &str, x: f32, base: f32, s: &str, color| {
-            let (rect, cut) =
-                winui::text_fit(p, o.x + x, o.y + base, s, color, o.x + PAGE_TEXT_RIGHT);
+            let (rect, cut) = winui::text_fit(
+                p,
+                o.x + x,
+                o.y + base,
+                s,
+                color,
+                o.x + PAGE_TEXT_RIGHT + wider,
+            );
             winui::copyable(ui, rect, key, s, cut);
         };
         let web_page = item.got_web_page();
@@ -2285,18 +2322,25 @@ fn segment_columns(start: u64, done: f64, total: u64, width: f64) -> Option<(f32
 
 /// The custom-drawn segment bar (spec "Segment bar"): 13-row gradients, red start columns;
 /// `segments`: each one's start and bytes done, as drawn ([`Glide`]).
-fn segment_bar(p: &egui::Painter, o: Pos2, item: &Item, segments: &[(u64, f64)]) {
+fn segment_bar(p: &egui::Painter, o: Pos2, item: &Item, segments: &[(u64, f64)], wider: f32) {
     let (x0, y0) = (o.x + 17.0, o.y + 249.0);
     let border = crate::theme::colors().segment_border;
-    fill(p, x0, y0, x0 + 512.0, y0, border);
-    fill(p, x0, y0 + 14.0, x0 + 512.0, y0 + 14.0, border);
+    fill(p, x0, y0, x0 + 512.0 + wider, y0, border);
+    fill(p, x0, y0 + 14.0, x0 + 512.0 + wider, y0 + 14.0, border);
     fill(p, x0, y0, x0, y0 + 14.0, border);
-    fill(p, x0 + 512.0, y0, x0 + 512.0, y0 + 14.0, border);
+    fill(
+        p,
+        x0 + 512.0 + wider,
+        y0,
+        x0 + 512.0 + wider,
+        y0 + 14.0,
+        border,
+    );
     for (x, y) in [
         (x0, y0),
-        (x0 + 512.0, y0),
+        (x0 + 512.0 + wider, y0),
         (x0, y0 + 14.0),
-        (x0 + 512.0, y0 + 14.0),
+        (x0 + 512.0 + wider, y0 + 14.0),
     ] {
         px(p, x, y, crate::theme::colors().segment_corner);
     }
@@ -2315,14 +2359,14 @@ fn segment_bar(p: &egui::Painter, o: Pos2, item: &Item, segments: &[(u64, f64)])
         }
     };
     let ix = o.x + 18.0;
-    run(ix, ix + 510.0, 0);
+    run(ix, ix + 510.0 + wider, 0);
     let Some(total) = item.size.filter(|t| *t > 0) else {
         return;
     };
-    let col = |v: f64| (v / total as f64 * 511.0).floor() as f32;
+    let col = |v: f64| (v / total as f64 * (511.0 + wider) as f64).floor() as f32;
     for &(start, done) in segments {
         let sx = ix + col(start as f64);
-        if let Some((a, b)) = segment_columns(start, done, total, 511.0) {
+        if let Some((a, b)) = segment_columns(start, done, total, (511.0 + wider) as f64) {
             run(ix + a, ix + b, 1);
         }
         run(sx, sx, 2);
@@ -2354,15 +2398,21 @@ fn helper_line(why: &mdm_tools::streams::Helper) -> String {
 }
 
 /// The connections table (spec "Connections table"): N. · Downloaded · Info.
-fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>) {
-    let outer = r(o, 17.0, 273.0, 513.0, 128.0);
+fn connections(
+    ui: &mut Ui,
+    p: &egui::Painter,
+    o: Pos2,
+    snap: Option<&Snapshot>,
+    extra: egui::Vec2,
+) {
+    let outer = r(o, 17.0, 273.0, 513.0 + extra.x, 128.0 + extra.y);
     winui::solid(p, outer, winui::FIELD_EDGE());
     fill(
         p,
         o.x + 18.0,
         o.y + 274.0,
-        o.x + 528.0,
-        o.y + 399.0,
+        o.x + 528.0 + extra.x,
+        o.y + 399.0 + extra.y,
         // Every list's background (IDM's light one is mauve, #beb4be: the only one of its kind).
         winui::FIELD(),
     );
@@ -2370,7 +2420,7 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
         p,
         o.x + 19.0,
         o.y + 275.0,
-        o.x + 510.0,
+        o.x + 510.0 + extra.x,
         o.y + 298.0,
         winui::LIST_HEADER(),
     );
@@ -2388,7 +2438,7 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
         .map(|c| winui::text_width(p, &(c.id + 1).to_string()))
         .fold(0.0, f32::max);
     let dx = number_column_extra(widest, winui::text_width(p, number));
-    for x in [48.0 + dx, 148.0 + dx, 498.0] {
+    for x in [48.0 + dx, 148.0 + dx, 498.0 + extra.x] {
         fill(
             p,
             o.x + x,
@@ -2415,10 +2465,10 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
     // i18n: column title: bytes this connection received
     head(55.0 + dx, 146.0 + dx, crate::i18n::t("Downloaded"));
     // i18n: column title: what the connection is doing
-    head(155.0 + dx, 496.0, crate::i18n::t("Info"));
+    head(155.0 + dx, 496.0 + extra.x, crate::i18n::t("Info"));
     let key = egui::Id::unique(("conn-scroll", ui.ctx().viewport_id()));
-    let visible = 6usize;
-    let body = r(o, 19.0, 299.0, 492.0, 100.0);
+    let visible = ((100.0 + extra.y) / 17.0).ceil() as usize;
+    let body = r(o, 19.0, 299.0, 492.0 + extra.x, 100.0 + extra.y);
     let first = first_row(ui, key, body, conns.len(), visible);
     let clip = p.with_clip_rect(body);
     for (k, c) in conns.iter().skip(first).take(visible + 1).enumerate() {
@@ -2469,7 +2519,7 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
             top + 12.0,
             &info,
             winui::TEXT(),
-            o.x + 507.0,
+            o.x + 507.0 + extra.x,
         );
         if cut {
             winui::full_on_hover(ui, rect.intersect(body), ("conn", c.id), &info);
@@ -2479,7 +2529,7 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
     rows_bar(
         ui,
         key,
-        r(o, 511.0, 275.0, 17.0, 124.0),
+        r(o, 511.0 + extra.x, 275.0, 17.0, 124.0 + extra.y),
         conns.len(),
         visible,
         first,

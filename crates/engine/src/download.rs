@@ -131,6 +131,9 @@ pub struct Options {
     /// the address's cookies and logins going only if it is the same site (`scoped_headers`).
     /// Never for a form's POST (its body goes where it was given) or through a service account.
     pub browser_final: Option<Url>,
+    /// Cookies from the browser's store, scoped by the browser's domain, path, security and
+    /// expiry rules. Kept only in memory for this download.
+    pub browser_cookies: Vec<BrowserCookie>,
     /// How often resume state is saved (IDM: "several times per minute").
     pub save_interval: Duration,
     /// Speed limit for this download, bytes/s (IDM's limiter is per file). None = unlimited.
@@ -271,6 +274,21 @@ pub fn supported(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https") || crate::ftp::is_ftp(url)
 }
 
+/// Remove a URL's password before displaying or persisting it.
+pub fn without_password(url: &Url) -> Url {
+    let mut url = url.clone();
+    let _ = url.set_password(None);
+    url
+}
+
+fn require_supported(url: &Url) -> Result<(), Error> {
+    if supported(url) {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedScheme(url.scheme().to_owned()))
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Options {
@@ -285,6 +303,7 @@ impl Default for Options {
             agent_fallback: None,
             own_agent: None,
             browser_final: None,
+            browser_cookies: Vec::new(),
             save_interval: Duration::from_secs(2),
             speed_limit: None,
             verify_overlap: 64,
@@ -312,6 +331,177 @@ impl Default for Options {
             slow_disk: None,
             keep_state: false,
         }
+    }
+}
+
+/// One cookie handed over by the browser. Its value must never appear in debug output.
+#[derive(Clone, Default, PartialEq)]
+pub struct BrowserCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub host_only: bool,
+    pub path: String,
+    pub secure: bool,
+    pub expires: Option<f64>,
+}
+
+impl std::fmt::Debug for BrowserCookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserCookie")
+            .field("name", &self.name)
+            .field("value", &"[REDACTED]")
+            .field("domain", &self.domain)
+            .field("host_only", &self.host_only)
+            .field("path", &self.path)
+            .field("secure", &self.secure)
+            .field("expires", &self.expires)
+            .finish()
+    }
+}
+
+/// A cookie's safe seed for an HTTP cookie store. Using each cookie's own host, rather than the
+/// download URL, lets the store enforce domain, path, secure and expiry matching on redirects.
+pub(crate) fn browser_cookie_seed(cookie: &BrowserCookie) -> Option<(Url, String)> {
+    let token = |name: &str| {
+        !name.is_empty()
+            && name.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            })
+    };
+    if !token(&cookie.name)
+        || cookie
+            .value
+            .bytes()
+            .any(|b| b < 0x20 || b == 0x7f || b == b';')
+        || cookie.domain.trim() != cookie.domain
+    {
+        return None;
+    }
+    let domain = cookie.domain.trim_start_matches('.');
+    if domain.is_empty() || domain.contains('/') || domain.contains('@') {
+        return None;
+    }
+    let mut url = Url::parse("https://cookie.invalid/").ok()?;
+    url.set_host(Some(domain)).ok()?;
+    let mut value = format!("{}={}; Path={}", cookie.name, cookie.value, {
+        let path = if cookie.path.is_empty() {
+            "/"
+        } else {
+            &cookie.path
+        };
+        if !path.starts_with('/') || path.bytes().any(|b| b < 0x20 || b == 0x7f || b == b';') {
+            return None;
+        }
+        path
+    });
+    if !cookie.host_only {
+        value.push_str("; Domain=");
+        value.push_str(domain);
+    }
+    if cookie.secure {
+        value.push_str("; Secure");
+    }
+    if let Some(expires) = cookie.expires {
+        if !expires.is_finite() {
+            return None;
+        }
+        let remaining = (expires
+            - std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs_f64())
+        .ceil();
+        if remaining <= 0.0 {
+            return None;
+        }
+        value.push_str("; Max-Age=");
+        value.push_str(&(remaining as u64).to_string());
+    }
+    Some((url, value))
+}
+
+fn browser_cookie_store(cookies: &[BrowserCookie]) -> Arc<reqwest::cookie::Jar> {
+    let jar = Arc::new(reqwest::cookie::Jar::default());
+    for cookie in cookies {
+        if let Some((url, value)) = browser_cookie_seed(cookie) {
+            jar.add_cookie_str(&value, &url);
+        }
+    }
+    jar
+}
+
+#[cfg(test)]
+mod browser_cookie_tests {
+    use super::*;
+    use reqwest::cookie::CookieStore;
+
+    fn cookie(domain: &str, host_only: bool, path: &str, secure: bool) -> BrowserCookie {
+        BrowserCookie {
+            name: "sid".into(),
+            value: "private-value".into(),
+            domain: domain.into(),
+            host_only,
+            path: path.into(),
+            secure,
+            expires: None,
+        }
+    }
+
+    fn values(jar: &reqwest::cookie::Jar, address: &str) -> String {
+        jar.cookies(&Url::parse(address).unwrap())
+            .and_then(|value| value.to_str().ok().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn browser_cookies_follow_domain_path_secure_and_expiry_rules() {
+        let mut domain = cookie(".example.test", false, "/private", true);
+        domain.name = "domain".into();
+        let mut host = cookie("www.example.test", true, "/", true);
+        host.name = "host".into();
+        let mut expired = cookie("www.example.test", true, "/", false);
+        expired.name = "expired".into();
+        expired.expires = Some(1.0);
+        let jar = browser_cookie_store(&[domain, host, expired]);
+
+        let matching = values(&jar, "https://www.example.test/private/file");
+        assert!(matching.contains("domain=private-value"));
+        assert!(matching.contains("host=private-value"));
+        assert_eq!(
+            values(&jar, "https://cdn.example.test/private/file"),
+            "domain=private-value"
+        );
+        assert!(values(&jar, "https://www.example.test/other/file").contains("host="));
+        assert!(!values(&jar, "http://www.example.test/private/file").contains("domain="));
+        assert!(!values(&jar, "https://unrelated.test/private/file").contains("sid="));
+        assert!(!values(&jar, "https://www.example.test/").contains("expired="));
+    }
+
+    #[test]
+    fn browser_cookie_values_are_redacted_and_invalid_entries_are_ignored() {
+        let secret = cookie("example.test", true, "/", false);
+        assert!(!format!("{secret:?}").contains("private-value"));
+        let mut invalid = secret.clone();
+        invalid.value = "a=1; injected=1".into();
+        assert!(browser_cookie_seed(&invalid).is_none());
     }
 }
 
@@ -374,6 +564,8 @@ pub struct Request {
 /// failure itself for an interface to word in its own language (`Snapshot::failure`).
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unsupported URL scheme {0}: only HTTP and HTTPS downloads are supported")]
+    UnsupportedScheme(String),
     #[error("{}", describe_http(.0))]
     Http(Arc<reqwest::Error>),
     #[error("server answered {0}")]
@@ -517,6 +709,7 @@ impl Error {
         matches!(
             self,
             Error::FileChanged
+                | Error::UnsupportedScheme(_)
                 | Error::NoRanges
                 | Error::BadState(_)
                 | Error::Io(_)
@@ -998,6 +1191,7 @@ pub async fn probe_kept(
             None,
         ));
     }
+    require_supported(&url)?;
     let as_get = AsGet::default();
     // Through a service account (#44): its direct link is looked at instead, without the host's
     // cookies or logins.
@@ -1289,6 +1483,7 @@ impl Download {
         Download::spawn(req.url.clone(), move |shared, cancel| {
             let sh = shared.clone();
             let body = async move {
+                require_supported(&req.url)?;
                 after_clearing(req.dest.folder(), &cancel).await?;
                 after_settling(&req.dest, &cancel).await?;
                 if crate::ftp::is_ftp(&req.url) {
@@ -1980,6 +2175,7 @@ fn client_with(
     seen: &Arc<crate::server::ServerSeen>,
     follow: bool,
 ) -> Result<Client, Error> {
+    require_supported(url)?;
     let port = url.port_or_known_default().unwrap_or(443);
     let route = &opts.route;
     // An IP address in the URL never reaches the resolver, which drops what the chosen adapter
@@ -1992,6 +2188,12 @@ fn client_with(
                 .iter()
                 .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
         );
+    }
+    if !opts.browser_cookies.is_empty() {
+        builder = builder.cookie_provider(browser_cookie_store(&opts.browser_cookies));
+    }
+    if !opts.browser_cookies.is_empty() {
+        builder = builder.cookie_provider(browser_cookie_store(&opts.browser_cookies));
     }
     // With an adapter chosen, the system's proxy is looked up now, so that it can be checked
     // (and a proxy on this computer recognised) like the others.
@@ -2221,6 +2423,7 @@ async fn run_fresh(
     cancel: CancellationToken,
     kept: Option<KeptAnswer>,
 ) -> Result<Outcome, Error> {
+    require_supported(&req.url)?;
     let mut opts = opts;
     // The first request had to give up the browser's User-Agent (#372).
     let mut asked_as_mdm = false;
@@ -2823,6 +3026,8 @@ async fn run_resume(
     shared: Arc<Shared>,
     cancel: CancellationToken,
 ) -> Result<Outcome, Error> {
+    require_supported(&saved.url)?;
+    require_supported(&saved.final_url)?;
     let mut opts = opts;
     if saved.asked_as_mdm
         && let Some(agent) = opts.agent_fallback.take()
@@ -3703,6 +3908,7 @@ async fn get(
     expects: bool,
     cancel: &CancellationToken,
 ) -> Result<(Response, HeaderMap, Duration), Error> {
+    require_supported(&url)?;
     let (mut url, mut headers) = (url, headers);
     // A site's link is asked at its file's address (a Drive link: Drive's file host), the same
     // party, so the user's cookies go too. A form's POST goes where it was given.

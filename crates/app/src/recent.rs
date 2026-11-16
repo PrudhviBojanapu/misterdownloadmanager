@@ -18,12 +18,12 @@ use crate::model::{Item, Status};
 /// device (#141), which sees no folder of this computer's, nor a password in an address.
 /// `exists`: whether a finished one's file is still there, when known ([`OnDisk`]).
 pub fn info(i: &Item, remote: bool, exists: Option<bool>) -> DownloadInfo {
-    let url = if remote {
+    // No list shows a password or user name in an address, here or on a paired device.
+    let url = {
         let mut u = i.url.clone();
         let _ = u.set_password(None);
+        let _ = u.set_username("");
         u.to_string()
-    } else {
-        i.url.to_string()
     };
     let complete = i.status == Status::Complete;
     DownloadInfo {
@@ -218,7 +218,8 @@ mod tests {
     }
 
     /// A finished download as the popup gets it: its state, when it finished, whether its file
-    /// is there; the same row for a paired device without its folder or the address's password.
+    /// is there, never the address's user or password; the same row for a paired device without its
+    /// folder.
     #[test]
     fn a_download_as_listed() {
         let mut i = item("a.zip");
@@ -231,7 +232,8 @@ mod tests {
         assert_eq!(d.status, "Complete");
         assert_eq!((d.exists, d.finished), (Some(false), Some(1_800_000_000)));
         assert!(d.redownload && d.kind.is_none() && d.left.is_none());
-        assert!(d.url.contains("secret") && d.path.ends_with("a.zip"));
+        // Never the address's user or password, even for this computer.
+        assert!(!d.url.contains("secret") && !d.url.contains("user@") && d.path.ends_with("a.zip"));
         let r = info(&i, true, None);
         assert!(!r.url.contains("secret") && r.path.is_empty() && r.exists.is_none());
         // Not finished: neither when, nor whether its file is there.

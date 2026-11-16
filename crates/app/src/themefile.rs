@@ -248,6 +248,12 @@ fn load_in(
     depth: usize,
     followed: &mut Option<Followed>,
 ) -> Result<Loaded, String> {
+    if id == "classic" {
+        return Ok(Loaded {
+            theme: palette::CLASSIC.clone(),
+            warnings: Vec::new(),
+        });
+    }
     if let Some(t) = palette::builtins().into_iter().find(|t| t.id == id) {
         return Ok(Loaded {
             theme: t.clone(),

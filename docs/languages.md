@@ -2,6 +2,12 @@
 
 [← Back to docs index](README.md)
 
+> **Windows fork:** The application, installer and Edge extension are English-only. Translation
+> catalogs and the first-start language picker are not shipped. Existing language preferences
+> migrate to English; Unicode filenames, Indian regional formats, timezone and date/clock
+> settings remain supported. The remainder of this page is the upstream translation reference,
+> not functionality offered by this fork.
+
 MDM's interface comes in 86 languages: every display language Windows 11 offers, from Afrikaans to Vietnamese, including both Chinese scripts, Spanish for Spain and Mexico, French for France and Canada, Portuguese for Portugal and Brazil, and Serbian in Cyrillic and Latin.
 
 ## Choosing the language

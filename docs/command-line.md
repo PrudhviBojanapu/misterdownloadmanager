@@ -40,7 +40,9 @@ misterdownloadmanager.exe /s
 
 ## misterdownloadmanager-cli
 
-It comes with every download of MDM, next to the app (the installer puts it in MDM's folder). It works on its own: the app needn't run, except for `status` and `api`.
+It comes with every download of MDM, next to the app (the installer puts it in MDM's folder).
+Standalone download/media/torrent commands work without the app. `status`, `api`, download actions
+and the [typed app-control commands](#typed-non-interactive-app-control) require the running app.
 
 Its downloads leave the way the app's do: through **Options → Proxy / Socks** (no proxy, **Use system settings** with its `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` variables and the system's automatic configuration script, an automatic configuration script, fetched before the command starts, or a manual proxy with its login) and its **Network adapter**, with the DNS of **Options → Connection**. That covers `get`, `resume`, the video, playlist and gallery commands (yt-dlp and gallery-dl too), the `install-*` commands, and torrents when Torrent settings' **Use the proxy** is on. For one run, `--proxy` takes the place of Options' proxy: `none`, `system`, or a proxy's address, `http://127.0.0.1:7890`, `https://…`, `socks5://…`, `socks5h://…` (the proxy looks the sites' names up), `socks4://…`, `socks4a://…`. A password is never taken on the command line, where other programs can read it: write the user name in the address (`socks5://ann@127.0.0.1:1080`) and put the password in the `MDM_PROXY_PASSWORD` environment variable. `get` and `resume` also have `--dns` and `--adapter`, and `video-get` and `gallery-get` `--adapter` (`any` for none), for the same.
 
@@ -62,7 +64,7 @@ Its downloads leave the way the app's do: through **Options → Proxy / Socks** 
 | `status [--id N] [-s status] [--search text] [-c category] [-q queue] [-l limit]` (or `list`) | The running app's downloads, as JSON, with their ids (the automation API must be on). Optional flags filter by id, status, search string, category or queue, or limit the count. |
 | `pause ID...`, `start ID...` | Pause running downloads, or start (resume) stopped, queued or failed ones, in the running app. |
 | `remove ID...`, `delete ID...` | Take downloads off the running app's list: `remove` keeps their files, `delete` deletes them too. A running download is paused first (`pause`). |
-| `add URL [-o folder] [-f name] [-c category] [-q queue] [--checksum hash] [-r referer] [--user-agent agent] [--cookie cookie] [--private] [-l] [-s]` | Hand a download to the running app. `-o` sets the folder, `-f` the file name, `-c` the category, `-q` the queue, `--checksum` sets the required hash, `-r` the referring page address (Referer header), `--user-agent` sets the request's User-Agent, `--cookie` sets the Cookie header (a cookie on the command line ends up in the shell's history; `-` reads it from standard input instead), `--private` marks it as a private window's download (kept apart from normal windows' downloads, saved in the list only while **Options → General → Keep private-window downloads in the list** is on, as it is by default), `-l` queues it without starting, and `-s` skips the Download File Info dialog. Prints `{"id": N}` on success. |
+| `add URL [-o folder] [-f name] [-c category] [-q queue] [--checksum hash] [-r referer] [--user-agent agent] [--cookie cookie] [--private] [--duplicate skip\|add\|replace\|resume] [--no-complete-dialog] [-l] [-s]` | Hand a download to the running app (http, https, ftp, ftps or magnet). `-o` sets the folder, `-f` the file name, `-c` the category, `-q` the queue, `--checksum` sets the required hash, `-r` the referring page address (Referer header), `--user-agent` sets the request's User-Agent, `--cookie` sets the Cookie header (a cookie on the command line ends up in the shell's history; `-` reads it from standard input instead), `--private` skips saving the download to the app's history or saved list, `--duplicate` chooses what an address or file already there does (default `skip`), `--no-complete-dialog` (alias `--quiet-complete`) never shows **Download complete** for this download only, `-l` queues it without starting, and `-s` skips the Download File Info dialog. Prints `{"id": N}` on success. |
 | `start-queue [name] [-q name]`, `stop-queue [name] [-q name]` | Start or stop a download queue in the running app (automation API). Starts or stops the main queue if omitted. |
 | `pair` | Show a new code to pair a phone or remote browser with the running app's remote control: its web addresses, pairing code and a QR code. |
 | `api on`, `api off` | Turn the running app's automation API on or off. |
@@ -101,6 +103,86 @@ misterdownloadmanager-cli --json get https://example.com/big.iso -o D:\Downloads
 ```
 
 ## The automation API
+
+### Typed, non-interactive app control
+
+These commands operate on **the running app's list**, not a separate standalone download:
+
+```
+misterdownloadmanager-cli api on
+misterdownloadmanager-cli add https://example.com/a.zip --later --duplicate skip
+misterdownloadmanager-cli add https://example.com/b.zip --no-complete-dialog
+misterdownloadmanager-cli properties 42
+misterdownloadmanager-cli settings
+misterdownloadmanager-cli categories
+misterdownloadmanager-cli queues
+misterdownloadmanager-cli retry 42
+misterdownloadmanager-cli move 42 --folder D:\Downloads
+misterdownloadmanager-cli rename 42 archive.zip
+```
+
+`control JSON` exposes every typed operation below. `--no-complete-dialog` (JSON
+`"no_complete_dialog": true`, also on `media_add`) suppresses Download complete for that download
+only; other downloads keep the Options setting. For quoting, larger requests or credentials,
+use `control -` and send one JSON object on stdin. All replies are JSON; application errors exit
+with code 1. Operations require the local automation API and cannot be sent by LAN paired devices.
+They run through the app's normal property, options, queue, torrent and media mutation paths.
+Do not edit the live settings/download JSON files.
+
+Examples (the object passed to `control`, or the MCP `control` tool's `operation` argument):
+
+```json
+{"op":"set_properties","id":42,"patch":{"description":"Research","referer":"","direct":true}}
+{"op":"set_settings","patch":{"max_connections":16,"speed_limit_on":true,"speed_limit_kb":1024}}
+{"op":"set_category","key":null,"name":"Research","types":"PDF EPUB","folder":"D:\\Research"}
+{"op":"set_queue","queue":null,"name":"Research","files_at_once":2}
+{"op":"queue_items","queue":"Research","ids":[42,43]}
+{"op":"start_queue","queue":"Research"}
+```
+
+| `op` | Fields / behavior |
+|---|---|
+| `add` | `download`: `{url, folder?, file_name?, later?, category?, queue?, duplicate?}`. HTTP, HTTPS or magnet. `duplicate` defaults to **skip** (return the existing id, change nothing); checks both URL and destination filename, including changed signed URLs. A disk-only collision is skipped with null id and its path. **add** creates another numbered destination; **resume** starts the existing entry; **replace** stages an HTTP-file replacement at the chosen destination, swapping only after success, only while stopped. Failure/cancellation preserves the original. No duplicate question opens. A magnet returns `pending`; for trackable metadata/results and selected files use `torrent_lookup` instead. |
+| `properties`, `set_properties` | `id`; setter also takes `patch`: optional `description`, `referer` (empty clears), `login` (`[user,password]`, empty user clears), `address`, `direct`, `category`, remembered `speed_limit` (bytes/second; zero clears), `checksum` (hex hash; empty clears, next start). Address changes obey GUI restrictions: not running/complete, not a torrent or resolved video stream. Credentials are write-only. Reads include the last 100 event-log entries for asynchronous outcomes. |
+| `retry` | `ids`: resume stopped/failed entries, with per-id `done`/`skipped` results. It does not erase partial files or redownload complete entries. |
+| `move`, `rename` | Move takes `ids`, absolute `folder`; rename takes `id`, plain `name`. Moves accept finished or not-yet-started entries, as the GUI does. A running/partial rename is deferred until completion. Finished moves/renames are asynchronous: acceptance is not completion; inspect `properties` (`moving`, `renaming`, `rename_on_complete`) and the final path/status. Failures are retained in the download's event log. |
+| `settings`, `set_settings` | Read retained functional settings, or apply a typed `patch`. Missing fields are preserved. Includes connection/limits, DNS/adapter/proxy, capture, save/download behavior, torrent sharing/associations, video and LAN options. `video_subtitles` sets default `{langs, automatic, embed}`. `torrent_associations` registers/unregisters handlers without opening OS settings (Windows may still require the user to select MDM as default). Unknown/removed keys are rejected. Numeric ranges and DNS configurations are validated before applying. Build normalization keeps the fixed Metro/English/Edge configuration. |
+| `categories`, `set_category`, `delete_category` | List includes stable `key`, display `name`, `types`, absolute `folder`. Set takes optional existing `key` (null creates), `name`, `types`, optional `folder` (empty restores default). Delete takes `key`; General cannot be deleted. Existing entries move to General **without moving files**. |
+| `queues`, `set_queue`, `delete_queue` | List includes name, concurrency, running state and ordered ids. Set takes optional existing `queue` (null creates), `name`, `files_at_once` (1–128). The main queue cannot be deleted/renamed. |
+| `queue_items` | `queue`, distinct existing `ids`: replace its order/membership atomically while stopped; chosen ids leave other queues. An empty list clears it. |
+| `start_queue`, `stop_queue` | `queue`: exact name from `queues`. No scheduler, time quotas or finish/shutdown actions. |
+| `accounts`, `torbox` | Read only TorBox account metadata (never keys). Setter takes optional existing `id` (null creates), write-only `api_key`, `enabled`. Empty key removes the account. A supplied key is used/validated on subsequent service requests, not synchronously during this operation. Credentials use the existing protected settings persistence. |
+| `remote_status`, `pair`, `stop_pairing`, `revoke_device` | Status includes enabled/listening, URLs and paired-device metadata, never tokens/hashes. Pair returns a one-use code/addresses/QR, as CLI `pair` does. Revoke takes device `id`. Enable/configure using `set_settings` (`remote_on`, `remote_port`, `remote_listen`; empty listen means LAN). |
+| `video_lookup`, `video_poll`, `video_pick` | Lookup takes HTTP(S) `url`, returns `token`/state; poll takes `token`, returns quality choices or an error. Pick takes the ready `token`, zero-based `choice` index and `download` options (as `add`); it resolves the internal selector and adds that quality without dialogs. The lookup's actual page replaces `download.url`. Requires installed yt-dlp. Does not open a window, including headless mode. |
+| `media_add` | `kind`: `video` or `gallery`; `download` has the same fields as `add` and supports `skip`, `add`, `resume`. Unsafe in-place duplicate media `replace` is explicitly refused; use a numbered copy or resume instead. Optional `selector` (yt-dlp syntax; empty means best video+audio), `subtitles`: `{langs, automatic, embed}` (omitted uses saved defaults; empty `langs` explicitly disables), gallery `limit`. Adds to the app's list and uses normal progress/status/actions. Video destinations are numbered by the normal video naming path. Gallery `folder` is a parent, `file_name` names its own subfolder. Helpers must be installed (`install-ytdlp`, `install-ffmpeg`, `install-gallery-dl`). |
+| `playlist_lookup`, `job`, `playlist_add` | Lookup takes `url`, optional `from` (1-based), `count`; returns numeric `job`. Poll `{"op":"job","job":N}` for entries/errors until `pending:false`. Add takes `job`, optional selected `indices` (1-based playlist positions; omitted means all available), absolute `folder`, `selector`, `later`. Creates one GUI-list entry per selected video; normal video naming avoids collisions. Download-now starts the main basic queue. |
+| `torrent_lookup`, `torrent_add` | Lookup takes `source`: magnet or absolute `.torrent` path, returns numeric `job`. Poll `job` for name/hash/files (zero-based indices) or failure. Add takes `job`, absolute parent `folder`, optional selected `files` (omitted means all), `later`, optional `queue`, `use_existing`, `in_order`. Existing disk files are refused unless `use_existing:true`, which verifies/reuses them; existing hashes are refused. |
+| `torrent_files`, `torrent_choose_files` | `id`; choose also takes distinct non-padding `files` indices. A torrent session must be ready. Changing selection uses the same Files-tab logic and updates its size; adding files to a stopped torrent does not start it. |
+| `torrent_recheck`, `torrent_reannounce`, `torrent_trackers`, `torrent_order` | `id`; trackers also takes `trackers` URL strings, order takes `in_order`. Actions use the app's torrent host; async outcomes appear in the download event log. |
+| `torrent_create` | Absolute input `path` and new `output`: creates a torrent on a background job; poll `job` for its info hash/path. Never overwrites an existing output. |
+| `helpers`, `install_helper` | Inspect installed helper paths/versions; installer takes `helper`: `ytdlp`, `ffmpeg` or `gallery_dl`, and returns a background `job`. Uses the existing verified helper-install paths and configured proxy. |
+| `choose_helper` | `helper`: `ytdlp`, `ffmpeg` or `gallery_dl`; `path`: absolute trusted executable, or null to restore the default. Returns a background `job`; the existing GUI validator runs the executable's version command (up to 20 seconds), checks supported versions, then persists the selection through the existing helper configuration writer. Invalid choices do not replace the previous helper. Installs and selections are serialized. |
+| `verify_checksum` | `id` of a completed, unmoving local file; optional `expected` hex MD5/SHA-1/SHA-256/SHA-512/CRC32 (algorithm prefix accepted). Omitted uses the saved expected checksum; supplied values are remembered as the GUI does. Returns a background `job`. Poll `job` until `pending:false`; `result` contains `id`, `path`, `status` (`match`/`mismatch`), `matched`, `expected`, `actual`, and `size`. **A completed mismatch job is not a successful verification:** inspect `matched`. IO failures or detected changes during hashing return an error. It never redownloads/deletes the file. |
+
+Lookup jobs are bounded (32 playlist/torrent jobs), in memory only, and expire after ten minutes.
+Save a job's id and poll it; do not assume an asynchronous lookup/add/move succeeded merely
+because it was accepted. Use `pause`, `start`, `remove`, `delete`, `status` as before.
+
+Settings reads never return proxy passwords, site-login passwords or TorBox API keys. Updates
+preserve credentials unless explicitly supplied: `proxy_password` replaces/clears the proxy
+password; `site_logins` replaces the `[site,user,password]` list (`[]` clears).
+Use stdin rather than command arguments for these fields, and do not echo them into logs.
+
+Not exposed: RSS, scheduler/quotas/shutdown, clipboard monitoring/drop target, event sounds,
+geo lookup, CNL, extraction, FTP, non-TorBox services, translation/theme/renderer settings.
+UI-only layout/dialog preferences are not automation operations.
+TorBox browser/device authorization is not automated; the supported functional sign-in alternative
+is a TorBox API key through `torbox` (stdin recommended). Playlist import uses selected listed entries and the common
+selector (per-video subtitle choices remain a `media_add` operation).
+
+`set_settings`'s `update_check` enables/disables automatic signed updates of the app and
+its bundled Edge extension. Newer fork releases install after downloads and file operations
+are idle for 30 seconds; see [automatic app and Edge updates](windows-release.md#automatic-app-and-edge-updates).
 
 Other programs can ask the running app what it is downloading, and pause, start, remove or delete downloads. The API is **off by default**; turn it on with `misterdownloadmanager-cli api on` (and off with `api off`).
 

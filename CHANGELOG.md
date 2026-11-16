@@ -5,6 +5,29 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+### Local Windows fixes
+
+- Native window dragging coalesces position-only notifications instead of repainting every
+  viewport at each mouse movement. Windows still moves the window immediately; the final
+  position reaches the UI when the drag ends. Download updates, resizing and DPI changes
+  continue normally.
+- Download progress windows have native resize borders and resize cursors. The title bar
+  follows the window width; status text, progress bars and connection details use the extra
+  width, and a taller window shows more connections. Smaller windows keep scrolling access
+  to the original controls.
+
+### Local download fixes
+
+- Interactive file downloads check the intended destination against both saved downloads
+  and disk files, even when a signed URL changes. The existing duplicate-download dialog,
+  rather than a separate popup, asks
+  whether to skip, use a numbered name, overwrite, or use/resume an unfinished download.
+  Running downloads cannot be overwritten. Resume keeps the existing segments and
+  validators and refreshes the address; missing or incompatible partial data disables it.
+  Overwrite discards partial data only after confirmation and preserves a completed file
+  until its replacement succeeds. Browser automatic starts use the same check; explicitly
+  silent command-line downloads retain their scripting behavior.
+
 ### Added
 
 - **Archives tested when their download completes:** a finished archive can still be broken (a server that sent wrong bytes, a proxy that mangled part of it), and that showed only when someone opened it. MDM now tests every ZIP, 7z and RAR archive before its download counts as done, a split one (`.zip.001`, `.z01`, `.7z.001`, `.part1.rar`, `.r00`) once, when every volume of it is downloaded, whichever finishes last (the volumes in so far are never called damaged, and **Test archive** on a split archive not complete yet says so): 7-Zip's own test (`7z t`, with the 7-Zip **Options → Archives** finds or was given) reads every file back and checks it, and MDM tests a ZIP itself when there is no 7-Zip. The list says **Checking 45%** meanwhile; the download's queue, its **Download complete** window, its sound and its extraction wait for it. A damaged archive says **Damaged** in the list, names its damaged files in its log, isn't extracted by itself, and the **Damaged archive** window offers **Redownload**. A ZIP in one file is repaired instead when MDM can tell where its damaged files are: only their bytes are downloaded again, from the same server and the same version of the file (asked as any resume is, with the file's ETag or date, the bytes before each part checked against the disk; a file that changed on the server stops instead of mixing versions), then it is tested once more. 7z and RAR archives (whose files are in blocks 7-Zip's test doesn't place) and split archives are tested and offered for **Redownload**, never repaired in part. Encrypted archives aren't tested. **Options → Archives → Test archives when their download completes, up to 4 GB** is on by default; a test reads the whole file, so a larger archive is tested only with right-click → **Test archive**, whatever its size ([#1661](https://github.com/anefzaoui/misterdownloadmanager/issues/1661)).
@@ -356,6 +379,75 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 - Left click on the tray icon now toggles the main window: hidden or minimized shows it again, in front hides it to the tray, and behind other windows brings it forward (it only ever showed it, so clicking while the window was visible did nothing). On Windows it goes by what covers the window, so it works with the icon under the taskbar's ^ too.
 - A download started in the browser (a video's download button, a link, a magnet or .torrent) now opens only its dialog when the main window is hidden or minimized, instead of always bringing the full window up.
 
+
+## [0.5.8]
+
+### Windows fork
+
+- Rebased on current upstream (78 new commits), keeping: the notification-area downloads
+  panel (a click on the tray icon shows running downloads with Pause and Cancel), the
+  browser popup's recent downloads list, SOCKS proxy type and **Test** in Options,
+  helper self-repair, choosing a torrent's files when adding it, downloading part of a
+  video, and many download, video and torrent fixes.
+- The popup's recent downloads never show an address's user name or password.
+- Archive testing is not included: it needs the 7-Zip and archive features this fork removes.
+
+## [0.5.7]
+
+### Windows fork
+
+- Rebased on current upstream (49 new commits): faster pause on slow disks, logging that no
+  longer stalls the window, GitHub update rate-limit fallback, SourceForge and browser-check
+  fixes, file-name decoding, expired-link renewal, video and torrent recovery fixes.
+- FTP, FTPS and FTPES downloads are supported again, including PASV mode and address logins.
+- `misterdownloadmanager-cli add`, the typed `add` operation and MCP `add_download` take
+  `--cookie` (`-` reads standard input), `--private` and `--no-complete-dialog`
+  (`--quiet-complete`): that download alone never shows **Download complete**, without
+  changing Options. Cookie values are redacted from debug output.
+- A name typed in Save As that is already on disk is asked about once, as the download starts,
+  with the fork's skip, numbered, overwrite and resume choices.
+
+## [0.5.6]
+
+### Windows fork
+
+- Rebased on current upstream, retaining the Windows x64, English, Edge-only fork and its
+  approved feature removals. Includes updated browser-like ranged requests, CLI/MCP add options
+  and filtering, Save As naming, mixed-DPI dialogs, keyboard access, and redirect handling.
+- Browser-captured downloads now carry cookies from the matching browser store. Cookie domain,
+  path, HTTPS-only and expiry rules remain enforced across redirects.
+- Keeps newest downloads at the top and the signed fork update flow for the app and bundled Edge
+  extension.
+
+## [0.5.5]
+
+### Windows fork
+
+- The download list opens sorted newest first (the Added column, descending), so new and
+  running downloads sit at the top. Clicking a column header still changes the sort.
+
+## [0.5.4]
+
+### Windows fork
+
+- Rebased on the latest upstream (CLI `start-queue`/`stop-queue`).
+- Confirms the automatic update path: an installed 0.5.3 finds this signed release on the
+  fork, installs it silently once idle, restarts, and the bundled Edge extension reloads
+  itself to the new version.
+
+## [0.5.3]
+
+### Windows fork
+
+- Automatic app updates use this fork's GitHub releases and pinned release-signing key.
+  Installation waits until downloads, active queues and file moves/renames have been idle
+  for 30 seconds; active downloads are not interrupted by an automatic restart.
+- The bundled unpacked Edge extension detects a newer local version and reloads itself.
+  Extension files arrive with the verified app update, not as remotely loaded scripts.
+  Load `{app}\extension\chromium` once; a separately extracted extension ZIP is not linked
+  to the installed app and must be replaced manually.
+- English/Edge-only Windows x64 packaging, dark Metro with colorful icons, retained-feature
+  CLI/MCP automation, and the approved lean feature set.
 
 ## [0.5.2] - 2026-11-09
 

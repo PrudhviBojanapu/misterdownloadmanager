@@ -1,0 +1,4 @@
+Mister Download Manager fork release signing configuration proof.
+Repository: PrudhviBojanapu/misterdownloadmanager
+Fingerprint: E7029305EBD69B1B16FB13960AC0D17698AC4E20
+This is not a release checksum manifest and authorizes no downloadable files.

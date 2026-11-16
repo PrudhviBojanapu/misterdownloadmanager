@@ -37,6 +37,38 @@ struct Cli {
 // nothing is gained by boxing them.
 #[allow(clippy::large_enum_variant)]
 enum Cmd {
+    /// Send a typed operation to the running app. JSON text, or "-" to read stdin.
+    /// Includes add, properties, set_properties, retry, move, rename, settings,
+    /// set_settings, categories, set_category, delete_category, queues, set_queue,
+    /// delete_queue, queue_items, start_queue, stop_queue, accounts, torbox, remote_status,
+    /// pair, stop_pairing, revoke_device, video_lookup, video_poll, media_add,
+    /// playlist_lookup, torrent_lookup, job, playlist_add, torrent_add and torrent actions.
+    Control {
+        /// A JSON operation, e.g. '{"op":"settings"}'. Use stdin for credentials.
+        operation: String,
+    },
+    /// Read a download's properties, without credentials.
+    Properties { id: u64 },
+    /// Read retained functional settings, without credentials.
+    Settings,
+    /// List categories, their file types and destinations.
+    Categories,
+    /// List basic queues, concurrency and ordered download ids.
+    Queues,
+    /// Retry stopped or failed downloads.
+    Retry {
+        #[arg(required = true)]
+        ids: Vec<u64>,
+    },
+    /// Move finished or not-yet-started downloads. Accepted moves finish asynchronously.
+    Move {
+        #[arg(required = true)]
+        ids: Vec<u64>,
+        #[arg(long)]
+        folder: String,
+    },
+    /// Rename now or defer until completion.
+    Rename { id: u64, name: String },
     /// Download a URL. Ctrl+C pauses; continue later with `resume`.
     Get {
         /// The address to download (http or https).
@@ -367,15 +399,15 @@ enum Cmd {
         #[arg(required = true)]
         ids: Vec<u64>,
     },
-    /// Add a download to the running app.
+    /// Add a download to the running app without dialogs.
     Add {
-        /// The address to download (http, https, ftp, ftps, or a magnet link).
+        /// The address to download (http, https, or a magnet link).
         url: String,
         /// Folder to save into.
-        #[arg(short, long)]
+        #[arg(short, long, alias = "folder")]
         output: Option<PathBuf>,
         /// File name to save as.
-        #[arg(short = 'f', long = "name")]
+        #[arg(short = 'f', long = "name", alias = "file-name")]
         name: Option<String>,
         /// A category for the download (e.g. "Compressed", "Documents", "Music", "Programs", "Video").
         #[arg(short = 'c', long = "category")]
@@ -406,6 +438,12 @@ enum Cmd {
         /// Private: do not save the download to the app's history or saved list.
         #[arg(short = 'p', long = "private")]
         private: bool,
+        /// Skip by default; add numbers a copy; replace swaps the HTTP file only on success.
+        #[arg(long, default_value = "skip", value_parser = ["skip", "add", "replace", "resume"])]
+        duplicate: String,
+        /// Never show Download complete for this download; other downloads keep Options' setting.
+        #[arg(long = "no-complete-dialog", alias = "quiet-complete")]
+        no_complete_dialog: bool,
     },
     /// Start a download queue in the running app (automation API). Starts the main queue by default.
     StartQueue {
@@ -634,6 +672,13 @@ impl std::error::Error for Reported {}
 fn ask(cmd: mdm_ipc::Command) -> anyhow::Result<()> {
     let answer = mdm_ipc::request(&cmd)
         .map_err(|e| anyhow::anyhow!("Mister Download Manager isn't running ({e})"))?;
+    if cmd.wants_reply()
+        && !serde_json::from_str::<serde_json::Value>(&answer).is_ok_and(|v| v.is_object())
+    {
+        anyhow::bail!(
+            "the app did not return an operation result ({answer}); it may be busy, refusing access, or too old"
+        );
+    }
     println!("{answer}");
     if serde_json::from_str::<mdm_ipc::api::ErrorAnswer>(&answer).is_ok() {
         return Err(Reported.into());
@@ -704,6 +749,8 @@ fn add_command(
     later: bool,
     silent: bool,
     private: bool,
+    duplicate: String,
+    no_complete_dialog: bool,
 ) -> anyhow::Result<mdm_ipc::Command> {
     add_command_with(
         url,
@@ -718,6 +765,8 @@ fn add_command(
         later,
         silent,
         private,
+        duplicate,
+        no_complete_dialog,
         std::io::stdin(),
     )
 }
@@ -748,30 +797,34 @@ fn add_command_with(
     user_agent: Option<String>,
     cookie: Option<String>,
     later: bool,
-    silent: bool,
+    _silent: bool,
     private: bool,
+    duplicate: String,
+    no_complete_dialog: bool,
     stdin: impl Read,
 ) -> anyhow::Result<mdm_ipc::Command> {
-    let dir = output.map(|p| {
-        std::path::absolute(&p)
-            .unwrap_or(p)
-            .to_string_lossy()
-            .to_string()
-    });
-    let cookies = read_cookie(cookie, stdin)?;
+    let folder = output
+        .map(|p| std::path::absolute(&p).map(|p| p.to_string_lossy().into_owned()))
+        .transpose()?;
+    let cookie = read_cookie(cookie, stdin)?;
     Ok(mdm_ipc::Command {
-        url: Some(url),
-        dir,
-        name,
-        category,
-        queue,
-        checksum,
-        referer,
-        user_agent,
-        cookies,
-        later,
-        silent,
-        private,
+        operation: Some(mdm_ipc::automation::Operation::Add {
+            download: mdm_ipc::automation::AddDownload {
+                url,
+                folder,
+                file_name: name,
+                category,
+                queue,
+                checksum,
+                referer,
+                user_agent,
+                cookie,
+                later,
+                private,
+                duplicate: serde_json::from_value(serde_json::Value::String(duplicate))?,
+                no_complete_dialog,
+            },
+        }),
         ..Default::default()
     })
 }
@@ -812,6 +865,13 @@ fn pair(json: bool) -> anyhow::Result<()> {
 }
 
 /// An automation API action on the running app's downloads; prints its answer.
+fn control(operation: mdm_ipc::automation::Operation) -> anyhow::Result<()> {
+    ask(mdm_ipc::Command {
+        operation: Some(operation),
+        ..Default::default()
+    })
+}
+
 fn act(action: &str, ids: Vec<u64>) -> anyhow::Result<()> {
     ask(mdm_ipc::Command {
         action: Some(action.into()),
@@ -1845,6 +1905,27 @@ async fn run(cmd: Cmd, json: bool, accounts: Option<&dyn Accounts>) -> anyhow::R
             queue,
             limit,
         } => status_command(id, status, search, category, queue, limit),
+        Cmd::Control { operation } => {
+            let operation = if operation == "-" {
+                use std::io::Read;
+                let mut text = String::new();
+                std::io::stdin()
+                    .take(mdm_ipc::MAX_MESSAGE as u64 + 1)
+                    .read_to_string(&mut text)?;
+                anyhow::ensure!(text.len() <= mdm_ipc::MAX_MESSAGE, "operation is too large");
+                text
+            } else {
+                operation
+            };
+            control(serde_json::from_str(&operation)?)
+        }
+        Cmd::Properties { id } => control(mdm_ipc::automation::Operation::Properties { id }),
+        Cmd::Settings => control(mdm_ipc::automation::Operation::Settings {}),
+        Cmd::Categories => control(mdm_ipc::automation::Operation::Categories {}),
+        Cmd::Queues => control(mdm_ipc::automation::Operation::Queues {}),
+        Cmd::Retry { ids } => control(mdm_ipc::automation::Operation::Retry { ids }),
+        Cmd::Move { ids, folder } => control(mdm_ipc::automation::Operation::Move { ids, folder }),
+        Cmd::Rename { id, name } => control(mdm_ipc::automation::Operation::Rename { id, name }),
         Cmd::Pause { ids } => act("pause", ids),
         Cmd::Start { ids } => act("start", ids),
         Cmd::Remove { ids } => act("remove", ids),
@@ -1862,9 +1943,23 @@ async fn run(cmd: Cmd, json: bool, accounts: Option<&dyn Accounts>) -> anyhow::R
             later,
             silent,
             private,
+            duplicate,
+            no_complete_dialog,
         } => ask(add_command(
-            url, output, name, category, queue, checksum, referer, user_agent, cookie, later,
-            silent, private,
+            url,
+            output,
+            name,
+            category,
+            queue,
+            checksum,
+            referer,
+            user_agent,
+            cookie,
+            later,
+            silent,
+            private,
+            duplicate,
+            no_complete_dialog,
         )?),
         Cmd::StartQueue { queue, name } => ask(mdm_ipc::Command {
             action: Some("start_queue".into()),
@@ -2430,6 +2525,39 @@ fn torrent_source(s: &str) -> anyhow::Result<mdm_torrent::Source> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn control_rejects_unknown_fields_before_contacting_the_app() {
+        let error = run(
+            Cmd::Control {
+                operation: r#"{"op":"settings","password":"oops"}"#.into(),
+            },
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+    #[test]
+    fn app_control_parses_explicit_duplicate_policy_and_rejects_unknown_policy() {
+        let cli = Cli::try_parse_from([
+            NAME,
+            "add",
+            "https://example.com/a",
+            "--later",
+            "--duplicate",
+            "resume",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.cmd, Cmd::Add { later: true, duplicate, .. } if duplicate == "resume")
+        );
+        assert!(
+            Cli::try_parse_from([NAME, "add", "https://example.com/a", "--duplicate", "ask",])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([NAME, "control", "-"]).is_ok());
+    }
 
     /// #1556: `--proxy` takes none, system or a proxy's address (http, https, socks5, socks5h,
     /// socks4, socks4a; http when none is written); a user name in the address with the password
@@ -2762,6 +2890,7 @@ mod tests {
                 later: false,
                 silent: false,
                 private: false,
+                ..
             } if url == "https://example.test/a.zip"
         ));
 
@@ -2799,6 +2928,7 @@ mod tests {
                 later: true,
                 silent: true,
                 private: false,
+                ..
             } if url == "magnet:?xt=urn:btih:abc"
                 && o == &PathBuf::from("D:\\Downloads")
                 && n == "my_torrent"
@@ -2821,14 +2951,47 @@ mod tests {
                 later,
                 silent,
                 private,
+                duplicate,
+                no_complete_dialog,
             } => add_command(
-                url, output, name, category, queue, checksum, referer, user_agent, cookie, later,
-                silent, private,
+                url,
+                output,
+                name,
+                category,
+                queue,
+                checksum,
+                referer,
+                user_agent,
+                cookie,
+                later,
+                silent,
+                private,
+                duplicate,
+                no_complete_dialog,
             )
             .unwrap(),
             _ => unreachable!(),
         };
-        assert_eq!(cmd.checksum.as_deref(), Some(sha256));
+        let Some(mdm_ipc::automation::Operation::Add { download }) = cmd.operation else {
+            panic!("expected typed add");
+        };
+        assert_eq!(download.checksum.as_deref(), Some(sha256));
+        assert!(!download.no_complete_dialog);
+
+        let cli = Cli::try_parse_from([
+            NAME,
+            "add",
+            "https://example.test/file.zip",
+            "--no-complete-dialog",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Add {
+                no_complete_dialog: true,
+                ..
+            }
+        ));
 
         let cli = Cli::try_parse_from([
             NAME,
@@ -2953,56 +3116,60 @@ mod tests {
             false,
             false,
             false,
+            "skip".into(),
+            true,
         )
         .unwrap();
-        assert_eq!(cmd.dir.as_deref(), Some(expected.as_str()));
-        assert_eq!(cmd.referer.as_deref(), Some("https://example.test/source"));
-        assert_eq!(cmd.user_agent, None);
-        assert_eq!(cmd.cookies, None);
-        assert!(!cmd.private);
+        let Some(mdm_ipc::automation::Operation::Add { download }) = cmd.operation else {
+            panic!("expected typed add");
+        };
+        assert!(download.no_complete_dialog);
+        assert_eq!(download.folder.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            download.referer.as_deref(),
+            Some("https://example.test/source")
+        );
+        assert_eq!(download.user_agent, None);
+        assert_eq!(download.cookie, None);
+        assert!(!download.private);
+    }
+
+    fn typed(cmd: mdm_ipc::Command) -> mdm_ipc::automation::AddDownload {
+        let Some(mdm_ipc::automation::Operation::Add { download }) = cmd.operation else {
+            panic!("expected typed add");
+        };
+        download
     }
 
     #[test]
     fn add_command_reads_cookie_from_stdin() {
-        let cmd = add_command_with(
-            "https://example.test/a.zip".into(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("-".into()),
-            false,
-            false,
-            false,
-            std::io::Cursor::new("session=secret_token_123\r\n"),
-        )
-        .unwrap();
-        assert_eq!(cmd.cookies.as_deref(), Some("session=secret_token_123"));
-        // A script's add with cookies is not the browser's own hand-off.
-        assert!(!cmd.browser_handoff);
-        assert!(!cmd.private);
-
-        let empty = add_command_with(
-            "https://example.test/a.zip".into(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("-".into()),
-            false,
-            false,
-            false,
-            std::io::Cursor::new("   \r\n"),
-        )
-        .unwrap();
-        assert_eq!(empty.cookies, None);
-        assert!(!empty.private);
+        let add = |input: &'static str| {
+            typed(
+                add_command_with(
+                    "https://example.test/a.zip".into(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("-".into()),
+                    false,
+                    false,
+                    false,
+                    "skip".into(),
+                    false,
+                    std::io::Cursor::new(input),
+                )
+                .unwrap(),
+            )
+        };
+        let got = add("session=secret_token_123\r\n");
+        assert_eq!(got.cookie.as_deref(), Some("session=secret_token_123"));
+        assert!(!got.private);
+        assert!(!format!("{got:?}").contains("secret_token_123"));
+        assert_eq!(add("   \r\n").cookie, None);
     }
 
     #[test]
@@ -3020,22 +3187,26 @@ mod tests {
             ));
         }
 
-        let cmd = add_command(
-            "https://example.test/file.zip".into(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            true,
-        )
-        .unwrap();
-        assert!(cmd.private);
+        let got = typed(
+            add_command(
+                "https://example.test/file.zip".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                true,
+                "skip".into(),
+                false,
+            )
+            .unwrap(),
+        );
+        assert!(got.private);
     }
 
     #[test]

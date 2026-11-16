@@ -8,6 +8,15 @@ Each running download has its own progress window. It opens when the download st
 
 ![The progress window](images/progress.webp)
 
+On Windows, drag an edge or corner to resize the window. Widening it gives status text and
+connection details more room; making it taller shows more connections at once. In a smaller
+window, scroll to reach the controls that do not fit. **Show/Hide details** resets the window
+to its compact or expanded starting size.
+
+To keep a minimized progress window on the taskbar, turn off **Options → General → Minimize
+to the notification area**. This applies to the main window too; the separate **Hide to the
+notification area** button still hides a progress window deliberately.
+
 The **Download status** tab shows:
 
 - **Status** — **Connecting...**, **Receiving data...**, **Paused**, **Complete** or the error.
@@ -29,6 +38,22 @@ The buttons:
 - **Hide to the notification area** (a short dash with an arrow down to the corner; on Windows in
   the title bar, left of Minimize) puts the window in the notification area; **Downloads in
   progress** in the tray icon's menu brings it back. See [The tray icon](getting-started.md#the-tray-icon).
+
+## An existing filename
+
+The existing **Duplicate download** dialog also checks for files at the same destination,
+even when the link is different (for example, a refreshed signed link). It offers a numbered
+copy, overwrite, resume, and **Skip this download**. Skip is selected initially for a filename
+conflict.
+
+Resume requires valid MDM partial data and a compatible file size. It uses the new address
+while retaining the old segments, validators and checksum; the normal range and overlap
+checks still reject changed content. For a download already running, this choice opens its
+progress window instead. Overwrite is unavailable while a download uses the destination.
+Confirmed overwrite discards its unfinished data, but a completed file stays in place until
+the replacement succeeds. Existing duplicate copies are not merged or removed automatically.
+These checks also apply when the start dialog is disabled. Explicitly silent script
+commands keep their existing noninteractive behavior.
 
 ## Where the server is
 

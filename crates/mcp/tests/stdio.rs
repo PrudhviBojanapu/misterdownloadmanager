@@ -26,7 +26,11 @@ fn fake_app(dir: &std::path::Path, api_on: bool) -> Arc<Mutex<Vec<Value>>> {
             let req: Value = serde_json::from_str(&line).unwrap();
             let answer = if req["token"] != "secret" {
                 "denied".to_owned()
-            } else if !api_on && (req["query"].is_string() || req["action"].is_string()) {
+            } else if !api_on
+                && (req["query"].is_string()
+                    || req["action"].is_string()
+                    || req["operation"].is_object())
+            {
                 json!({ "error": "the automation API is off", "code": "api-off" }).to_string()
             } else if req["query"] == "list" {
                 json!({ "downloads": [
@@ -42,6 +46,10 @@ fn fake_app(dir: &std::path::Path, api_on: bool) -> Arc<Mutex<Vec<Value>>> {
                     { "key": "Compressed", "name": "Compressed" },
                 ] })
                 .to_string()
+            } else if req["operation"]["op"] == "add" {
+                json!({"id": 3, "pending": false}).to_string()
+            } else if req["operation"].is_object() {
+                json!({"updated": true}).to_string()
             } else if req["action"].is_string() {
                 json!({ "done": req["ids"], "skipped": [] }).to_string()
             } else {
@@ -147,6 +155,7 @@ fn an_assistant_lists_adds_and_acts_through_the_app() {
         names,
         [
             "add_download",
+            "control",
             "list_downloads",
             "pause_downloads",
             "remove_downloads",
@@ -186,7 +195,7 @@ fn an_assistant_lists_adds_and_acts_through_the_app() {
         "add_download",
         json!({ "url": "https://example.com/a.zip", "folder": "D:\\Files", "later": true }),
     );
-    assert!(!err && text.contains("main queue"), "{text}");
+    assert!(!err && text.contains(r#""id":3"#), "{text}");
     let (text, err) = mcp.call("add_download", json!({ "url": "file:///etc/passwd" }));
     assert!(err && text.contains("isn't an address"), "{text}");
 
@@ -206,35 +215,43 @@ fn an_assistant_lists_adds_and_acts_through_the_app() {
         "add_download",
         json!({ "url": "https://example.com/b.zip", "later": true, "queue": "Night", "category": "Compressed", "referer": "https://example.com/page.html", "user_agent": "CustomAgent/1.0", "cookie": "session=xyz123; uid=42", "private": true }),
     );
-    assert!(!err && text.contains(r#"queue "Night""#), "{text}");
+    assert!(!err && text.contains(r#""id":3"#), "{text}");
     let (text, err) = mcp.call("start_queue", json!({ "queue": "Night" }));
     assert!(!err && text.contains(r#"queue "Night""#), "{text}");
     let (text, err) = mcp.call("stop_queue", json!({ "queue": "Night" }));
     assert!(!err && text.contains(r#"queue "Night""#), "{text}");
 
+    let (text, err) = mcp.call(
+        "control",
+        json!({"operation": {
+            "op": "set_properties", "id": 2, "patch": {"description": "saved by agent"}
+        }}),
+    );
+    assert!(!err, "{text}");
+
     // What reached the app: the fields its channel reads (mdm_ipc::Command), with the token.
     let seen = seen.lock().unwrap();
-    let add = seen
-        .iter()
-        .find(|r| r["url"] == "https://example.com/a.zip")
-        .unwrap();
-    assert_eq!(add["url"], "https://example.com/a.zip");
-    assert_eq!(add["dir"], "D:\\Files");
+    let add = seen.iter().find(|r| r["operation"]["op"] == "add").unwrap();
     assert_eq!(
-        (add["later"].clone(), add["silent"].clone()),
-        (json!(true), json!(true))
+        add["operation"]["download"]["url"],
+        "https://example.com/a.zip"
     );
     let add_night = seen
         .iter()
-        .find(|r| r["url"] == "https://example.com/b.zip")
-        .unwrap();
-    assert_eq!(add_night["url"], "https://example.com/b.zip");
+        .find(|r| r["operation"]["download"]["url"] == "https://example.com/b.zip")
+        .unwrap()["operation"]["download"]
+        .clone();
     assert_eq!(add_night["queue"], "Night");
     assert_eq!(add_night["category"], "Compressed");
     assert_eq!(add_night["referer"], "https://example.com/page.html");
     assert_eq!(add_night["user_agent"], "CustomAgent/1.0");
-    assert_eq!(add_night["cookies"], "session=xyz123; uid=42");
+    assert_eq!(add_night["cookie"], "session=xyz123; uid=42");
     assert_eq!(add_night["private"], true);
+    assert_eq!(add["operation"]["download"]["folder"], "D:\\Files");
+    assert_eq!(add["operation"]["download"]["later"], true);
+    assert_eq!(add["operation"]["download"]["duplicate"], "skip");
+    assert!(seen.iter().any(|r| r["operation"]["op"] == "set_properties"
+        && r["operation"]["patch"]["description"] == "saved by agent"));
     assert!(
         seen.iter()
             .any(|r| r["action"] == "delete" && r["ids"] == json!([1]))
@@ -265,6 +282,8 @@ fn says_when_the_api_is_off_or_the_app_is_not_running() {
     fake_app(data.path(), false);
     let mut mcp = Mcp::start(data.path());
     let (text, err) = mcp.call("list_downloads", json!({}));
+    assert!(err && text.contains("api on"), "{text}");
+    let (text, err) = mcp.call("add_download", json!({"url": "https://example.com/a"}));
     assert!(err && text.contains("api on"), "{text}");
 
     let empty = tempfile::tempdir().unwrap();

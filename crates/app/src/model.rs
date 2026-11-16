@@ -500,6 +500,10 @@ pub struct Item {
     /// once complete.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replace_file: Option<PathBuf>,
+    /// Added by automation with `no_complete_dialog`: this download never opens Download
+    /// complete, whatever Options says for other downloads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet_complete: bool,
     /// The Link grabber package it came in (#37): its archives are extracted together once
     /// every volume is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1274,6 +1278,7 @@ impl Item {
             name_from_url: false,
             number_at_start: false,
             replace_file: None,
+            quiet_complete: false,
             package: None,
             group: None,
             server: None,
@@ -2746,8 +2751,6 @@ mod helper_connection_tests {
             (Some(Saving), 10 * M - 1000),
             (None, 10 * M - 1000),
         ];
-        let start = std::time::Instant::now();
-        let mut quota = crate::quota::Quota::default();
         let mut shown = 0;
         for (n, (live, now)) in looks.into_iter().enumerate() {
             let before = shown;
@@ -2755,13 +2758,8 @@ mod helper_connection_tests {
             if live.is_some() {
                 assert!(shown >= before, "look {n}: {shown} < {before}");
             }
-            quota.record(start, std::iter::once((7, shown)));
         }
         assert_eq!(shown, 10 * M - 1000);
-        assert_eq!(
-            quota.used(start, std::time::Duration::from_secs(3600)),
-            10 * M
-        );
         // Not a live stream, or one not recording (yet, again): its job's own figure.
         assert_eq!(shown_downloaded(None, 0, 10 * M), 0);
     }

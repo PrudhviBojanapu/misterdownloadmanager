@@ -30,6 +30,52 @@ const APP_NAME = ext.runtime.getBrowserInfo
 
 const t = (key, ...subs) => ext.i18n.getMessage(key, subs) || key;
 
+// Unpacked Edge extensions have no update_url support. The signed app installer updates
+// their bundled files; reload only our own newer local manifest, never remote JavaScript.
+const BUNDLE_UPDATE_ALARM = "mdm-bundled-extension-update";
+let bundleCheck = null;
+function checkBundledUpdate() {
+  if (!ext.management?.getSelf || !ext.runtime.reload) return Promise.resolve(false);
+  if (bundleCheck) return bundleCheck;
+  bundleCheck = (async () => {
+    if ((await ext.management.getSelf()).installType !== "development") return false;
+    const response = await fetch(ext.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!response.ok) throw new Error(`Local extension manifest: HTTP ${response.status}`);
+    const disk = await response.json();
+    const version = disk.version;
+    if (disk.key !== ext.runtime.getManifest().key || !newerBundleVersion(version, VERSION)) return false;
+    // Let an installer finish copying the other bundled files before reloading.
+    await new Promise((resolve) => setTimeout(resolve, 10000));
+    const confirmed = await fetch(ext.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!confirmed.ok) throw new Error(`Local extension manifest: HTTP ${confirmed.status}`);
+    const stable = await confirmed.json();
+    if (stable.version !== version || stable.key !== disk.key) return false;
+    ext.runtime.reload();
+    return true;
+  })().catch((error) => {
+    console.warn("MDM bundled extension update failed:", error);
+    return false;
+  }).finally(() => { bundleCheck = null; });
+  return bundleCheck;
+}
+
+function newerBundleVersion(candidate, current) {
+  if (typeof candidate !== "string" || !/^\d+(?:\.\d+){0,3}$/.test(candidate)) return false;
+  const a = candidate.split(".").map(Number), b = current.split(".").map(Number);
+  for (let i = 0; i < 4; i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return false;
+}
+
+if (ext.alarms) {
+  ext.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === BUNDLE_UPDATE_ALARM) return checkBundledUpdate();
+  });
+  ext.alarms.create(BUNDLE_UPDATE_ALARM, { periodInMinutes: 5 });
+}
+checkBundledUpdate();
+
 // ---- the native host ---------------------------------------------------------------------
 
 // How long an answer may take: the host starts Mister Download Manager when it isn't running
@@ -2064,6 +2110,38 @@ async function cookieHeader(url, ctx) {
   return header(await cookiesFor(url, ctx));
 }
 
+async function downloadCookieContext(url, finalUrl, ctx) {
+  const urls = [url];
+  if (
+    typeof finalUrl === "string" &&
+    finalUrl !== url &&
+    /^https?:\/\//i.test(finalUrl) &&
+    finalUrl.length <= URL_MAX
+  ) {
+    urls.push(finalUrl);
+  }
+  const lists = await Promise.all(urls.map((address) => cookiesFor(address, ctx)));
+  const seen = new Set();
+  const cookieJar = [];
+  for (const list of lists) {
+    for (const c of list) {
+      const key = `${c.domain}\0${c.path || "/"}\0${c.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cookieJar.push({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        hostOnly: Boolean(c.hostOnly),
+        path: c.path || "/",
+        secure: Boolean(c.secure),
+        ...(typeof c.expirationDate === "number" ? { expirationDate: c.expirationDate } : {}),
+      });
+    }
+  }
+  return { cookies: header(lists[0] || []), cookieJar };
+}
+
 // For yt-dlp, which may ask another host of the site than the page's (a YouTube Music page is
 // looked up on www.youtube.com): each cookie with the domain, path and flags the browser keeps,
 // so the app files `.youtube.com`'s sign-in for every host of it and a host's own cookie for
@@ -2400,12 +2478,14 @@ async function pageOf(item, urls) {
 // rules (file types, excluded sites) don't apply; the host checks them for everything else.
 // `page`: the web page it was started from (`pageOf`).
 async function handOff(d) {
+  const cookieContext = await downloadCookieContext(d.url, d.finalUrl, d);
   const message = {
     url: d.url,
     finalUrl: d.finalUrl && d.finalUrl !== d.url ? d.finalUrl : "",
     referrer: d.referrer || "",
     ...(d.page && /^https?:\/\//i.test(d.page) && d.page.length <= URL_MAX ? { pageUrl: d.page } : {}),
-    cookies: await cookieHeader(d.url, d),
+    cookies: cookieContext.cookies,
+    cookieJar: cookieContext.cookieJar,
     filename: d.filename || "",
     // The browser's name is only its address's guess (#948, `addressNamed`): the host checks
     // Options' file types by it, and MDM names the file from the server's own answer.

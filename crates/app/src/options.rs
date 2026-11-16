@@ -1,5 +1,4 @@
-//! Options (Downloads → Options, the toolbar's Options): IDM's configuration dialog, nine pages
-//! in a two-row tab control (notes/ui-spec/options-dialog.md). Light in both modes, as IDM's.
+//! Options (Downloads → Options, the toolbar's Options), in a two-row tab control.
 //! It edits a copy of the settings: OK applies it, the close box and Escape discard it.
 
 use egui::{Pos2, Rect, Sense, Ui, pos2, vec2};
@@ -23,12 +22,6 @@ pub const DUPLICATE: [&str; 4] = [
     crate::i18n::mark(
         "If existing file is complete, show download complete dialog; otherwise resume it.",
     ),
-];
-const SOUND_EVENTS: [&str; 4] = [
-    crate::i18n::mark("Download complete"),
-    crate::i18n::mark("Download failed"),
-    crate::i18n::mark("Queue processing started"),
-    crate::i18n::mark("Queue processing stopped/finished"),
 ];
 
 /// A small entry dialog opened from a page.
@@ -57,8 +50,6 @@ enum Sub {
     Account(AccountEdit),
     /// Remote → Pair a device...: the code shown, until a device pairs or it is closed.
     Pair,
-    /// Archives → Archive passwords...: one password per line (#37).
-    Passwords(String),
 }
 
 /// Options → Remote's page number (the tabs' numbers).
@@ -210,17 +201,14 @@ pub struct OptionsDialog {
     cat_dir: String,
     /// Connection → "Default max. conn. number", as typed.
     conns: String,
-    mb: String,
     /// File types → "Don't take files smaller than", as typed (KB).
     min_kb: String,
-    hours: String,
     /// The exceptions' and site logins' lists: scroll and selection.
     exc_rows: winui::RowList,
     login_rows: winui::RowList,
     /// Accounts' list (#44).
     account_rows: winui::RowList,
     /// The Sounds list's scroll and selection.
-    sound_rows: winui::RowList,
     sub: Option<Sub>,
     /// Save to → New / Edit...: the category editor (D-021).
     cat_edit: Option<crate::categories::CategoryDialog>,
@@ -228,17 +216,8 @@ pub struct OptionsDialog {
     restore_ask: Option<crate::dialogs::Confirm>,
     /// Connection caps the engine learned, shown as "(auto)" rows under Exceptions.
     learned: Vec<(String, u32)>,
-    /// 7-Zip's program (Archives: RAR goes through it): the one chosen there, else the one
-    /// looked for when the window opens.
-    seven_zip: Option<std::path::PathBuf>,
-    /// Archives → Use another program... (#1525): the program picked, being asked beside the
-    /// window whether it is 7-Zip's command line (`extractq::is_7zip`), and its answer.
-    checking_7zip: Option<Checked7zip>,
-    /// The program last picked there didn't answer as 7-Zip: said in place of the line that
-    /// names the program, until another is picked.
-    not_7zip: bool,
+    /// 7-Zip's program (Archives: RAR goes through it), looked for when the window opens.
     /// HatchZip's command line program (Archives: extract in place), looked for with 7-Zip.
-    hatch_zip: Option<std::path::PathBuf>,
     /// Proxy / Socks → Network adapter (#35): the computer's adapters, read again every 2 s.
     adapters: Option<(std::time::Instant, Vec<mdm_engine::net::Adapter>)>,
     /// Proxy / Socks → Test (#1558): the answer, shared with its thread (None while it runs).
@@ -284,9 +263,9 @@ impl OptionsDialog {
         self.hotkey_taken = taken;
     }
     /// Open on tab `page` (the numbers in `tabs`: 0 General … 4 Connection, 5 Proxy / Socks,
-    /// 6 Sites Logins, 7 Accounts, 8 Sounds, 9 Regional, 10 Archives); for `/show options:<tab>`.
+    /// 6 Sites Logins, 7 Accounts, 9 Regional, 11 Remote); for `/show options:<tab>`.
     pub fn on_page(mut self, page: usize) -> Self {
-        self.page = page;
+        self.page = if matches!(page, 8 | 10) { 0 } else { page };
         self
     }
 
@@ -347,24 +326,17 @@ impl OptionsDialog {
             browser_rows: Default::default(),
             cat_dir: display_dir(&s.category_dir(Category::General, downloads)),
             conns: s.max_connections.clamp(1, s.connection_limit()).to_string(),
-            mb: s.limits_mb.to_string(),
             min_kb: s.capture_min_kb.to_string(),
-            hours: s.limits_hours.to_string(),
             s,
             page: 0,
             category: 0,
             exc_rows: Default::default(),
             login_rows: Default::default(),
             account_rows: Default::default(),
-            sound_rows: Default::default(),
             sub: None,
             cat_edit: None,
             restore_ask: None,
             learned,
-            seven_zip: crate::extractq::seven_zip_for(&settings.seven_zip_path),
-            checking_7zip: None,
-            not_7zip: false,
-            hatch_zip: crate::extractq::hatch_zip(),
             adapters: None,
             proxy_test: None,
             remote: None,
@@ -395,7 +367,7 @@ impl OptionsDialog {
             LIGHT_BG(),
             |ui, o| {
                 // Ctrl+Tab through the pages in the tabs' order (Archives, 10, came last).
-                const ORDER: [usize; 12] = [0, 1, 2, 3, 4, 11, 5, 6, 7, 8, 9, 10];
+                const ORDER: [usize; 10] = [0, 1, 2, 3, 4, 11, 5, 6, 7, 9];
                 let at = ORDER.iter().position(|p| *p == self.page).unwrap_or(0);
                 let by_key = winui::tab_keys(ui, ORDER.len(), at).map(|i| ORDER[i]);
                 if let Some(p) = tabs(ui, o, self.page).or(by_key) {
@@ -411,9 +383,7 @@ impl OptionsDialog {
                     6 => self.logins(ui, o),
                     7 => self.accounts(ui, o),
                     9 => self.regional(ui, o),
-                    10 => self.archives(ui, o),
                     REMOTE_PAGE => self.remote_page(ui, o),
-                    8 => self.sounds(ui, o),
                     _ => self.regional(ui, o),
                 }
                 let ok = winui::button_light(
@@ -488,9 +458,7 @@ impl OptionsDialog {
                     .parse()
                     .unwrap_or(8)
                     .clamp(1, s.connection_limit());
-                s.limits_mb = self.mb.parse().unwrap_or(200).max(1);
                 s.capture_min_kb = self.min_kb.parse().unwrap_or(0);
-                s.limits_hours = self.hours.parse().unwrap_or(5).max(1);
                 s.remote_port = self.remote_port();
                 s.test_archives_gb = self
                     .test_gb
@@ -524,19 +492,14 @@ impl OptionsDialog {
         if portable {
             s.launch_on_startup = false;
         }
-        let checks: [(f32, &mut bool, &str); 9] = [
+        let checks: [(f32, &mut bool, &str); 8] = [
             (
                 94.0,
                 &mut s.launch_on_startup,
                 crate::i18n::mark("Launch Mister Download Manager on startup"),
             ),
             (
-                112.0,
-                &mut s.clipboard_autostart,
-                crate::i18n::mark("Offer to download links copied to the clipboard"),
-            ),
-            (
-                130.0,
+                133.0,
                 &mut s.mv2_extensions,
                 crate::i18n::mark("Extend the availability of Manifest 2 Chrome extensions"),
             ),
@@ -593,7 +556,7 @@ impl OptionsDialog {
             // Portable: nothing is written to the registry, so no start with Windows. Manifest 2
             // extensions: an IDM-era Chrome policy with no meaning for MDM's extension (MV3):
             // shown as IDM has it, greyed (D-021).
-            let enabled = !(portable && i == 0) && i != 2 && (i < 6 || tray);
+            let enabled = !(portable && i == 0) && i != 1 && (i < 5 || tray);
             let check = winui::checkbox_light(ui, o + vec2(30.0, y), v, label, enabled);
             // Where a start with the session leaves the window (#226).
             if i == 0 && enabled && check.hovered() {
@@ -1652,59 +1615,6 @@ impl OptionsDialog {
                 self.sub = Some(Sub::Exception(Some(i), server, n.to_string()));
             }
         }
-        // Download limits (shared with the Scheduler's page).
-        let gp = r(o, 21.0, 315.0, 380.0, 82.0);
-        let gap = winui::caption_gap(&p, o.x + 37.0, o.x + 132.0, "Download limits", true);
-        winui::group_box(&p, gp, Some(gap));
-        winui::checkbox_light(
-            ui,
-            o + vec2(37.0, 310.0),
-            &mut self.s.limits_on,
-            "Download limits",
-            true,
-        );
-        let on = self.s.limits_on;
-        let line =
-            |lead: f32, lead_baseline: f32, y: f32, gap: f32, baseline: f32| winui::SentenceLine {
-                lead: winui::Lead::Right(o.x + lead),
-                lead_baseline: o.y + lead_baseline,
-                boxes: o + vec2(178.0, y),
-                gap,
-                baseline: o.y + baseline,
-            };
-        let boxes = winui::sentence(
-            ui,
-            &p,
-            crate::i18n::t(crate::quota::LIMITS_SENTENCE),
-            // Each line's words on its box's text baseline (the 20 px boxes at 330 and 351:
-            // winui::baseline_in gives 343 and 364; they sat 2–3 px below the numbers).
-            &[
-                line(170.0, 343.0, 330.0, 8.0, 343.0),
-                line(170.0, 364.0, 351.0, 11.0, 364.0),
-            ],
-            &[("mb", vec2(36.0, 20.0)), ("hours", vec2(36.0, 20.0))],
-            |p, x, baseline, s| {
-                winui::label(p, x, baseline, s, on);
-            },
-        );
-        // The sentence's words are painted, not exposed: each box is named as its part of it
-        // reads, or a screen reader says only "edit, 200" (#1407).
-        let names = winui::sentence_names(
-            crate::i18n::t(crate::quota::LIMITS_SENTENCE),
-            &["mb", "hours"],
-        );
-        let mb_box = winui::number_field(ui, boxes[0], &mut self.mb, 1, 999_999, on, LIGHT_PAGE());
-        winui::name(&mb_box, &names[0]);
-        let hours_box =
-            winui::number_field(ui, boxes[1], &mut self.hours, 1, 999, on, LIGHT_PAGE());
-        winui::name(&hours_box, &names[1]);
-        winui::checkbox_light(
-            ui,
-            o + vec2(37.0, 376.0),
-            &mut self.s.limits_warn,
-            "Show warning before stopping downloads",
-            on,
-        );
         // DNS (#36): who answers the names; the details in Settings....
         // i18n: label before the choice of DNS (the service that turns names into addresses)
         text(
@@ -2599,333 +2509,6 @@ impl OptionsDialog {
         ));
     }
 
-    /// Archives (ours, #37): extracting archives when their download completes, what becomes
-    /// of them, and Link grabber's ways.
-    fn archives(&mut self, ui: &mut Ui, o: Pos2) {
-        let p = ui.painter().clone();
-        // i18n: Options page title: extracting downloaded archives, and Link grabber
-        let title = crate::i18n::mark("Archives and Link grabber");
-        let w = winui::text_width_font(&p, winui::tahoma_bold(), title);
-        header(
-            ui,
-            o,
-            Icon::PageArchives,
-            title,
-            true,
-            406.0 - w,
-            61.0,
-            406.0,
-        );
-        let s = &mut self.s;
-        // i18n: Options → Archives: group box title
-        group(ui, o, 16.0, 92.0, 392.0, 259.0, "Archives");
-        winui::checkbox_light(
-            ui,
-            o + vec2(30.0, 110.0),
-            &mut s.extract_auto,
-            // i18n: Options → Archives check box (a Link grabber package has its own "Extract when done")
-            "Extract archives when their download completes",
-            true,
-        );
-        winui::checkbox_light(
-            ui,
-            o + vec2(30.0, 134.0),
-            &mut s.extract_delete,
-            if cfg!(windows) {
-                // i18n: Options → Archives check box
-                "Then move the archives to the Recycle Bin"
-            } else {
-                // i18n: Options → Archives check box (Linux and macOS)
-                "Then move the archives to the Trash"
-            },
-            true,
-        );
-        self.test_row(ui, o, 158.0);
-        let s = &mut self.s;
-        text(
-            &p,
-            o.x + 30.0,
-            o.y + 188.0,
-            // i18n: Options → Archives: a label before the list of where extracted files go
-            crate::i18n::t("What an archive holds goes:"),
-            LIGHT_TEXT(),
-        );
-        const INTO: [&str; 3] = [
-            // i18n: Options → Archives: where extracted files go
-            crate::i18n::mark("Into a folder named after it, when it holds several things"),
-            // i18n: Options → Archives: where extracted files go
-            crate::i18n::mark("Always into a folder named after it"),
-            // i18n: Options → Archives: where extracted files go
-            crate::i18n::mark("Straight into the archive's folder"),
-        ];
-        if let Some(i) = winui::combo_light(
-            ui,
-            r(o, 30.0, 195.0, 364.0, 21.0),
-            &INTO,
-            s.extract_subfolder.min(2) as usize,
-            true,
-            "opt-extract-into",
-        ) {
-            s.extract_subfolder = i as u8;
-        }
-        winui::paragraph(
-            &p,
-            o.x + 30.0,
-            o.y + 236.0,
-            crate::i18n::t(
-                "ZIP, 7Z, RAR, TAR, GZ and XZ; a split archive (.part1.rar, .7z.001) once\nevery volume is in. A file there already is kept: the new one is numbered.",
-            ),
-            LIGHT_TEXT(),
-            o.x + 400.0,
-            13.0,
-        );
-        // HatchZip only when asked for (in place); without it, 7z and RAR need 7-Zip.
-        let hatch = self.hatch_zip.as_ref().filter(|_| s.extract_in_place);
-        // The program picked with Use another program..., once it has answered (#1525).
-        let checked = self
-            .checking_7zip
-            .as_ref()
-            .and_then(|slot| slot.lock().unwrap().take());
-        if let Some((exe, is_7zip)) = checked {
-            self.checking_7zip = None;
-            self.not_7zip = !is_7zip;
-            if is_7zip {
-                s.seven_zip_path = exe.display().to_string();
-                self.seven_zip = Some(exe);
-            }
-        }
-        let (rar, ink) = match (hatch, &self.seven_zip) {
-            _ if self.not_7zip => (
-                // i18n: Options → Archives, in red: the program chosen with "Use another program..." isn't 7-Zip's command line program (an archiver's window was picked instead); 7z.exe is that program's file name
-                crate::i18n::t("That isn't 7-Zip's command line program (7z.exe).").to_owned(),
-                winui::ERROR(),
-            ),
-            (Some(path), _) => (
-                crate::i18n::fmt(
-                    // i18n: Options → Archives, when Extract in place with HatchZip (a program's name) is on: {path} is where its program is
-                    crate::i18n::t("7z and RAR archives are extracted by HatchZip ({path})."),
-                    &[("path", &crate::i18n::ltr(&path.display().to_string()))],
-                ),
-                LIGHT_TEXT(),
-            ),
-            (None, Some(path)) => (
-                crate::i18n::fmt(
-                    // i18n: Options → Archives: {path} is where 7-Zip's program is
-                    crate::i18n::t("7z and RAR archives are extracted by 7-Zip ({path})."),
-                    &[("path", &crate::i18n::ltr(&path.display().to_string()))],
-                ),
-                LIGHT_TEXT(),
-            ),
-            (None, None) => (
-                // i18n: Options → Archives, when 7-Zip isn't installed
-                crate::i18n::t(
-                    "7z and RAR archives need 7-Zip (7-zip.org), which isn't installed.",
-                )
-                .to_owned(),
-                winui::ERROR(),
-            ),
-        };
-        winui::fit(
-            ui,
-            &p,
-            o.x + 30.0,
-            o.y + 282.0,
-            &rar,
-            ink,
-            o.x + 400.0,
-            "opt-rar-tool",
-        );
-        let has_hatchzip = self.hatch_zip.is_some();
-        winui::checkbox_light(
-            ui,
-            o + vec2(30.0, 300.0),
-            &mut s.extract_in_place,
-            if has_hatchzip {
-                // i18n: Options → Archives check box: HatchZip (a program's name) removes the archive while extracting it, so only the extracted files need disk space
-                "Extract in place with HatchZip: only the files need room"
-            } else {
-                // i18n: Options → Archives check box, greyed: HatchZip (a program's name, hatchzip.dev its site) isn't installed
-                "Extract in place with HatchZip (hatchzip.dev, not installed)"
-            },
-            has_hatchzip,
-        );
-        // The passwords tried on an encrypted archive before it is asked (#37).
-        let (pw_x, pw_w) = winui::button_row_from_left(
-            &p,
-            &[("Archive passwords...", 30.0, 150.0)],
-            0.0,
-            389.0,
-            300.0,
-        )[0];
-        // i18n: Options → Archives: button: edit the list of passwords tried on encrypted archives
-        if winui::button_light(
-            ui,
-            r(o, pw_x, 320.0, pw_w, 21.0),
-            "Archive passwords...",
-            ButtonKind::Normal,
-            false,
-        )
-        .clicked()
-        {
-            self.sub = Some(Sub::Passwords(s.archive_passwords.clone()));
-        }
-        // Another 7-Zip than the one found (PeaZip's own, a portable copy), or back to the one
-        // found (#1525), at the row's end.
-        let own = !s.seven_zip_path.is_empty();
-        let tool_label = if own {
-            // i18n: Options → Archives: button, shown once a 7-Zip program was chosen with "Use another program...": go back to the 7-Zip MDM finds on the computer by itself
-            crate::i18n::mark("Find 7-Zip automatically")
-        } else {
-            // i18n: Options → Archives: button: pick the 7-Zip command line program to extract 7z and RAR archives with (PeaZip's own 7z.exe, a portable copy), instead of the one MDM finds
-            crate::i18n::mark("Use another program...")
-        };
-        let (tool_x, tool_w) =
-            winui::buttons_to_right(&p, 394.0, 0.0, &[(tool_label, 150.0)], 200.0)[0];
-        if winui::button_light(
-            ui,
-            r(o, tool_x, 320.0, tool_w, 21.0),
-            tool_label,
-            if self.checking_7zip.is_some() {
-                ButtonKind::Disabled
-            } else {
-                ButtonKind::Normal
-            },
-            false,
-        )
-        .clicked()
-        {
-            self.not_7zip = false;
-            if own {
-                s.seven_zip_path.clear();
-                self.seven_zip = crate::extractq::seven_zip_for("");
-            } else {
-                // i18n: file picker title; {name} = the program to choose (yt-dlp, ffmpeg, 7-Zip)
-                let title = crate::i18n::fmt(crate::i18n::t("Choose {name}"), &[("name", "7-Zip")]);
-                winui::start_pick(ui.ctx(), "options-7zip", move || {
-                    crate::winui::file_dialog(&title).pick_file()
-                });
-            }
-        }
-        if let Some(exe) = winui::picked(ui.ctx(), "options-7zip") {
-            let slot: Checked7zip = Default::default();
-            let (out, wake) = (slot.clone(), ui.ctx().clone());
-            std::thread::spawn(move || {
-                let is_7zip = crate::extractq::is_7zip(&exe);
-                *out.lock().unwrap() = Some((exe, is_7zip));
-                wake.request_repaint();
-            });
-            self.checking_7zip = Some(slot);
-        }
-        let saved = s.archive_password_list().len() as u64;
-        if saved > 0 {
-            winui::fit(
-                ui,
-                &p,
-                o.x + pw_x + pw_w + 10.0,
-                o.y + 336.0,
-                // i18n: Options → Archives: beside the Archive passwords button: how many are saved
-                &crate::i18n::tn(saved, "{n} saved", "{n} saved"),
-                LIGHT_DISABLED(),
-                o.x + tool_x - 8.0,
-                "opt-passwords-saved",
-            );
-        }
-        // i18n: Options → Archives: group box title
-        group(ui, o, 16.0, 351.0, 392.0, 116.0, "Link grabber");
-        winui::checkbox_light(
-            ui,
-            o + vec2(30.0, 367.0),
-            &mut s.grabber_check,
-            // i18n: Options → Archives → Link grabber check box (IDM's Download all links looks every link up)
-            "Look links up when they arrive (name, size, online)",
-            true,
-        );
-        winui::checkbox_light(
-            ui,
-            o + vec2(30.0, 389.0),
-            &mut s.grabber_hide_pages,
-            "Hide web pages",
-            true,
-        );
-        winui::checkbox_light(
-            ui,
-            o + vec2(30.0, 411.0),
-            &mut s.cnl_on,
-            // i18n: Options → Archives → Link grabber check box: Click'n'Load, a link site's button that sends its links to a program on this computer (port 9666, as JDownloader)
-            "Accept Click'n'Load from web pages (port 9666)",
-            true,
-        );
-        winui::paragraph(
-            &p,
-            o.x + 30.0,
-            o.y + 435.0,
-            crate::i18n::t(
-                "Tasks → Link grabber, or the browser's \"Download all links\": a split\narchive's volumes are one package, the other links of a page another.",
-            ),
-            LIGHT_DISABLED(),
-            o.x + 400.0,
-            13.0,
-        );
-    }
-
-    /// Archives → "Test archives when their download completes, up to {gb} GB" (#1661): the check
-    /// box's caption is the sentence's words before its number box, the unit after it, as the
-    /// translation places them; at `y` (the glyph's top).
-    fn test_row(&mut self, ui: &mut Ui, o: Pos2, y: f32) {
-        let p = ui.painter().clone();
-        let sentence = crate::i18n::t(TEST_SENTENCE);
-        let pieces = winui::sentence_pieces(sentence, &["gb"]);
-        let row = pieces.first().cloned().unwrap_or_default();
-        let at = row.iter().position(|p| *p == winui::Piece::Slot("gb"));
-        let text_of = |pieces: &[winui::Piece]| {
-            pieces
-                .iter()
-                .filter_map(|p| match p {
-                    winui::Piece::Text(t) => Some(*t),
-                    winui::Piece::Slot(_) => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let (lead, tail) = match at {
-            Some(i) => (text_of(&row[..i]), text_of(&row[i + 1..])),
-            None => (text_of(&row), String::new()),
-        };
-        const BOX_W: f32 = 54.0;
-        let tail_w = winui::text_width(&p, &tail).ceil();
-        // The caption ends before the box, the box and its unit before the group's edge.
-        let room_end = 394.0 - tail_w - 6.0 - BOX_W - 6.0;
-        let box_x = (winui::checkbox_caption_end(&p, 30.0, &lead).ceil() + 6.0).min(room_end + 6.0);
-        winui::checkbox_light_until(
-            ui,
-            o + vec2(30.0, y),
-            &mut self.s.test_archives,
-            &lead,
-            true,
-            Some(o.x + room_end),
-        );
-        let on = self.s.test_archives;
-        let gb = winui::spin_box(
-            ui,
-            r(o, box_x, y - 4.0, BOX_W, 21.0),
-            &mut self.test_gb,
-            1,
-            u64::from(TEST_GB_MAX),
-            on,
-            "opt-test-gb",
-        );
-        winui::name(&gb, &winui::sentence_names(sentence, &["gb"])[0]);
-        if !tail.is_empty() {
-            text(
-                &p,
-                o.x + box_x + BOX_W + 6.0,
-                o.y + y + 10.0,
-                &tail,
-                if on { LIGHT_TEXT() } else { LIGHT_DISABLED() },
-            );
-        }
-    }
-
     /// Regional (ours): how dates and times are written in the list and the Scheduler, as the
     /// system's region writes them or the user's own way.
     fn regional(&mut self, ui: &mut Ui, o: Pos2) {
@@ -3054,185 +2637,6 @@ impl OptionsDialog {
             crate::i18n::t("Used by the list of downloads and the Scheduler."),
             LIGHT_DISABLED(),
         );
-    }
-
-    fn sounds(&mut self, ui: &mut Ui, o: Pos2) {
-        let p = ui.painter().clone();
-        header(
-            ui,
-            o,
-            Icon::PageSounds,
-            "Sound settings",
-            true,
-            304.0,
-            61.0,
-            406.0,
-        );
-        group(
-            ui,
-            o,
-            25.0,
-            102.0,
-            383.0,
-            299.0,
-            "Select sounds for Mister Download Manager events",
-        );
-        let list_on_screen = r(o, 33.0, 112.0, 366.0, 250.0);
-        list_frame(&p, list_on_screen);
-        let list = winui::rect(list_on_screen);
-        let head_y = list.top() + 1.0;
-        // i18n: column title: the event a sound plays for
-        text(
-            &p,
-            list.left() + 8.0,
-            head_y + 16.0,
-            crate::i18n::t("Event"),
-            LIGHT_TEXT(),
-        );
-        fill(
-            &p,
-            o.x + 224.0,
-            head_y + 1.0,
-            o.x + 224.0,
-            head_y + 23.0,
-            winui::HEADER_LINE(),
-        );
-        text(
-            &p,
-            o.x + 231.0,
-            head_y + 16.0,
-            crate::i18n::t("Sound file"),
-            LIGHT_TEXT(),
-        );
-        // The events: the shared row list under the header (its frame on the list's). Space
-        // ticks one, a double-click or Enter chooses its file, Delete clears it.
-        let body = Rect::from_min_max(
-            pos2(list.left() + 1.0, head_y + 25.0),
-            pos2(list.right() - 1.0, list.bottom() - 1.0),
-        );
-        let grid = winui::GRID();
-        let sounds = &mut self.s.sounds;
-        self.sound_rows.name = crate::i18n::t("Sounds");
-        let ev = winui::row_list(
-            ui,
-            "sounds",
-            winui::rect(body.expand(1.0)),
-            SOUND_EVENTS.len(),
-            17.0,
-            &mut self.sound_rows,
-            |ui, clip, i, row, look| {
-                let top = row.top();
-                fill(clip, row.left(), top + 16.0, row.right(), top + 16.0, grid);
-                fill(clip, o.x + 225.0, top, o.x + 225.0, top + 16.0, grid);
-                let (on, file) = &mut sounds[i];
-                let event = crate::i18n::t(SOUND_EVENTS[i]);
-                look.name = event.to_owned();
-                winui::row_check(
-                    ui,
-                    clip,
-                    pos2(o.x + 39.0, top + 2.0),
-                    on,
-                    event,
-                    ("sound", i),
-                );
-                winui::fit(
-                    ui,
-                    clip,
-                    o.x + 57.0,
-                    top + 12.0,
-                    event,
-                    look.ink,
-                    o.x + 221.0,
-                    ("sound-event", i),
-                );
-                let name = std::path::Path::new(file.as_str())
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let drawn = winui::fit(
-                    ui,
-                    clip,
-                    o.x + 231.0,
-                    top + 12.0,
-                    &name,
-                    look.ink,
-                    row.right() - 4.0,
-                    ("sound-file", i),
-                );
-                // The whole path on hover (the name alone says little).
-                if !file.is_empty() {
-                    winui::copyable(ui, drawn, ("sound-path", i), file, true);
-                }
-            },
-        );
-        if let Some(i) = ev.space {
-            sounds[i].0 = !sounds[i].0;
-        }
-        if ev.focused {
-            self.sound_rows
-                .type_to(ui, "sounds", SOUND_EVENTS.len(), |i| {
-                    crate::i18n::t(SOUND_EVENTS[i]).to_owned()
-                });
-        }
-        if let Some(i) = ev.delete {
-            sounds[i] = (false, String::new());
-        }
-        let pick_file = ev.double_clicked.or(ev.entered);
-        if pick_file.is_some() {
-            winui::take_key(ui, egui::Key::Enter);
-        }
-        let sel = self.sound_rows.selected;
-        let kind = if sel.is_some() {
-            ButtonKind::Normal
-        } else {
-            ButtonKind::Disabled
-        };
-        // Both as wide as their labels in this language (#192), each around its English centre.
-        let browse_at = winui::button_around(&p, "Browse...", 106.0, 73.0, 21.0, 233.0);
-        let play_at = winui::button_around(
-            &p,
-            "Play",
-            241.0,
-            73.0,
-            browse_at.0 + browse_at.1 + 8.0,
-            404.0,
-        );
-        let browse = winui::button_light(
-            ui,
-            r(o, browse_at.0, 371.0, browse_at.1, 21.0),
-            "Browse...",
-            kind,
-            false,
-        )
-        .clicked();
-        let has_file = sel.is_some_and(|i| !self.s.sounds[i].1.is_empty());
-        let play_kind = if has_file {
-            ButtonKind::Normal
-        } else {
-            ButtonKind::Disabled
-        };
-        let play =
-            // i18n: verb: plays the sound
-            winui::button_light(ui, r(o, play_at.0, 371.0, play_at.1, 21.0), "Play", play_kind, false)
-                .clicked();
-        if let Some(i) = sel {
-            if browse || pick_file == Some(i) {
-                let title = crate::i18n::t(SOUND_EVENTS[i]).to_owned();
-                // i18n: the kind of file the Open dialog lists (sound files)
-                let kind = crate::i18n::t("Sounds").to_owned();
-                winui::start_pick(ui.ctx(), &format!("sound-{i}"), move || {
-                    crate::winui::file_dialog(&title)
-                        .add_filter(kind, &["wav"])
-                        .pick_file()
-                });
-            }
-            if let Some(f) = winui::picked(ui.ctx(), &format!("sound-{i}")) {
-                self.s.sounds[i] = (true, f.display().to_string());
-            }
-            if play && has_file {
-                play_sound(&self.s.sounds[i].1);
-            }
-        }
     }
 
     // ---- entry dialogs --------------------------------------------------------------------
@@ -4087,47 +3491,6 @@ impl OptionsDialog {
                         .store(true, std::sync::atomic::Ordering::Relaxed),
                 }
             }
-            Sub::Passwords(mut list) => {
-                let out = window(
-                    ctx,
-                    "opt-archive-passwords",
-                    // i18n: window title: the passwords tried on encrypted archives
-                    "Archive passwords",
-                    [420.0, 230.0],
-                    false,
-                    LIGHT_BG(),
-                    |ui, o| {
-                        let p = ui.painter().clone();
-                        winui::paragraph(
-                            &p,
-                            o.x + 14.0,
-                            o.y + 20.0,
-                            // i18n: Archive passwords window: how the list is used
-                            crate::i18n::t(
-                                "One password per line, tried in this order on an encrypted archive before MDM asks. The one that fits moves to the top.",
-                            ),
-                            LIGHT_TEXT(),
-                            o.x + 406.0,
-                            14.0,
-                        );
-                        multiline(
-                            ui,
-                            r(o, 14.0, 52.0, 392.0, 122.0),
-                            &mut list,
-                            "archive-passwords",
-                            true,
-                        );
-                        ok_cancel(ui, o, 252.0, 192.0, true)
-                    },
-                );
-                match out {
-                    Outcome::Open => self.sub = Some(Sub::Passwords(list)),
-                    Outcome::Done(()) => {
-                        self.s.archive_passwords = settings::password_lines(&list).join("\n");
-                    }
-                    Outcome::Closed => {}
-                }
-            }
             Sub::Addresses(mut list) => {
                 let out = window(
                     ctx,
@@ -4479,16 +3842,6 @@ fn strip_proxy_scheme(s: &mut Settings) {
     }
 }
 
-pub fn play_sound(file: &str) {
-    if crate::offscreen() {
-        return;
-    }
-    #[cfg(windows)]
-    crate::win32::play_sound(file);
-    #[cfg(unix)]
-    crate::unix::play_sound(file);
-}
-
 /// A folder as the dialogs show it: the full path, as IDM's Options shows it, ending in the
 /// system's separator (a backslash on Windows).
 fn display_dir(dir: &std::path::Path) -> String {
@@ -4774,11 +4127,8 @@ fn account_dialog(ui: &mut Ui, o: Pos2, e: &mut AccountEdit) -> Outcome<settings
             ButtonKind::Disabled
         }
     };
-    if e.service.signs_in_with_password() {
-        password_signin(ui, o, e, busy);
-    }
     // i18n: button: sign in to the debrid service in the browser, by typing a code there
-    else if winui::button_light(
+    if winui::button_light(
         ui,
         r(o, 14.0, 44.0, 220.0, 23.0),
         "Sign in in the browser",
@@ -4866,10 +4216,7 @@ fn account_dialog(ui: &mut Ui, o: Pos2, e: &mut AccountEdit) -> Outcome<settings
     } else {
         crate::dialogs::grow_px(&ctx, "opt-account", 0.0);
     }
-    let label = if e.service.signs_in_with_password() {
-        // i18n: Options → Add an account: label before the field for an API key the user made at the service (Mega-Debrid: My Account → API Key; the other way to sign in)
-        crate::i18n::t("Or paste an application's API key:")
-    } else if by_code {
+    let label = if by_code {
         // i18n: Options → Add an account: label before the field for the service's API token (the other way to sign in)
         crate::i18n::t("Or paste your API token:")
     } else {
@@ -4980,73 +4327,6 @@ fn account_dialog(ui: &mut Ui, o: Pos2, e: &mut AccountEdit) -> Outcome<settings
 
 /// Accounts → Add...: the user name and password a service signs in with (Mega-Debrid), where
 /// the others have "Sign in in the browser". Kept sealed, as the tokens are.
-fn password_signin(ui: &mut Ui, o: Pos2, e: &mut AccountEdit, busy: bool) {
-    let p = ui.painter().clone();
-    // The fields start after the longer label in this language (#192).
-    // i18n: Options → Add an account: label before the field for the user name at the debrid service
-    let user_label = crate::i18n::t("User name:");
-    // i18n: Options → Add an account: label before the field for the password at the debrid service
-    let password_label = crate::i18n::t("Password:");
-    let x =
-        (14.0 + winui::text_width(&p, user_label).max(winui::text_width(&p, password_label)) + 8.0)
-            .min(200.0);
-    text(&p, o.x + 14.0, o.y + 48.0, user_label, LIGHT_TEXT());
-    winui::edit_light(
-        ui,
-        r(o, x, 44.0, 300.0 - x + 14.0, 21.0),
-        &mut e.user,
-        !busy,
-        false,
-    );
-    text(&p, o.x + 14.0, o.y + 76.0, password_label, LIGHT_TEXT());
-    winui::password_light(
-        ui,
-        r(o, x, 72.0, 300.0 - x + 14.0, 21.0),
-        &mut e.password,
-        !busy,
-    );
-    let ready = !busy && !e.user.trim().is_empty() && !e.password.is_empty();
-    // i18n: button: sign in to the debrid service with the user name and password typed in
-    if winui::button_light(
-        ui,
-        r(
-            o,
-            x,
-            100.0,
-            winui::button_fit_width(&p, "Sign in", 90.0, 300.0),
-            21.0,
-        ),
-        "Sign in",
-        if ready {
-            ButtonKind::Normal
-        } else {
-            ButtonKind::Disabled
-        },
-        false,
-    )
-    .clicked()
-    {
-        let ctx = ui.ctx().clone();
-        e.signin.by_password(
-            e.service,
-            e.user.trim().to_owned(),
-            e.password.clone(),
-            &ctx,
-        );
-    }
-    winui::paragraph(
-        &p,
-        o.x + 14.0,
-        o.y + 130.0,
-        // i18n: Options → Add an account: a note under the user name and password fields (Mega-Debrid bans the address for some minutes after a few wrong passwords)
-        crate::i18n::t(
-            "After a few wrong passwords the service blocks this connection for some minutes.",
-        ),
-        LIGHT_TEXT(),
-        o.x + 406.0,
-        14.0,
-    );
-}
 
 /// Open a service's web page in the browser (never in an off-screen test run).
 fn open_page(url: &str) {
@@ -5179,22 +4459,16 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
             390.0,
         ),
     ];
-    // IDM's Dial Up / VPN tab is gone (D-021: no modem support; it did nothing); ours, Regional
-    // (how dates and times are written), Accounts (#44, debrid services) and Archives (#37) share
-    // the row, sized by their labels.
-    const P: [(usize, &str, f32, f32, f32); 6] = [
+    // The second row is sized by the remaining settings pages.
+    const P: [(usize, &str, f32, f32, f32); 4] = [
         // i18n: tab title
         (5, crate::i18n::mark("Proxy / Socks"), 8.0, 104.0, 20.0),
         // i18n: tab title: user names and passwords for sites
         (6, crate::i18n::mark("Sites Logins"), 104.0, 192.0, 116.0),
-        // i18n: tab title: the user's debrid service accounts (Real-Debrid…)
+        // i18n: tab title: the user's debrid service accounts
         (7, crate::i18n::mark("Accounts"), 192.0, 265.0, 204.0),
-        // i18n: tab title: sound settings
-        (8, crate::i18n::mark("Sounds"), 265.0, 336.0, 279.0),
         // i18n: tab title: how dates and times are written (date order, 12- or 24-hour clock)
         (9, crate::i18n::mark("Regional"), 336.0, 380.0, 350.0),
-        // i18n: tab title: extracting downloaded archives, and Link grabber
-        (10, crate::i18n::mark("Archives"), 380.0, 419.0, 390.0),
     ];
     let p = ui.painter().clone();
     let border = winui::HEADER_LINE();
@@ -5240,7 +4514,7 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
             winui::keep_keys(ui, &resp, true, false, false);
             if resp.has_focus() {
                 // Left / Right (mirrored in RTL), Home / End through the pages in order.
-                const ORDER: [usize; 12] = [0, 1, 2, 3, 4, 11, 5, 6, 7, 8, 9, 10];
+                const ORDER: [usize; 10] = [0, 1, 2, 3, 4, 11, 5, 6, 7, 9];
                 let at = ORDER.iter().position(|p| *p == i).unwrap_or(0) as isize;
                 let fwd = if winui::rtl() { -1 } else { 1 };
                 let to = if winui::take_key(ui, egui::Key::ArrowRight) {

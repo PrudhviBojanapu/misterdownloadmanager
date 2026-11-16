@@ -28,9 +28,9 @@ pub mod verify;
 
 pub use dns::{Dns, DnsChoice, DnsError};
 pub use download::{
-    Destination, Download, Error, Event, FileHook, KeptAnswer, NetKind, Options, Outcome,
-    ProbeInfo, Proxy, Request, Snapshot, fetch, hop_client, http_client, page_links, page_videos,
-    probe, probe_kept, supported,
+    BrowserCookie, Destination, Download, Error, Event, FileHook, KeptAnswer, NetKind, Options,
+    Outcome, ProbeInfo, Proxy, Request, Snapshot, fetch, hop_client, http_client, page_links,
+    page_videos, probe, probe_kept, supported, without_password,
 };
 pub use html::{DeclaredVideo, DeclaredVideos};
 pub use net::{NetError, Route};

@@ -12,7 +12,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use mdm_extract::{VolumeKind, volume_key};
+use crate::archive_names::{VolumeKind, volume_key};
 
 use crate::model::Item;
 

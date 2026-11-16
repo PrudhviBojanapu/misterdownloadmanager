@@ -1114,12 +1114,16 @@ impl SaveAsPlace {
     /// `name` in `dir` as MDM names it: Save As's text for now (fitted, not numbered: no wait
     /// for the disk), its free numbered name asked for.
     pub fn name_in(&mut self, dir: &Path, name: &str) -> String {
+        self.name_in_mode(dir, name, true)
+    }
+
+    fn name_in_mode(&mut self, dir: &Path, name: &str, number: bool) -> String {
         let shown = display_path(&mdm_engine::naming::guess(dir, name));
         let ask = PlaceAsk {
             dir: dir.to_owned(),
             name: name.to_owned(),
             own: self.own.clone(),
-            number: true,
+            number,
         };
         self.ask(ask, &shown);
         shown
@@ -1234,6 +1238,7 @@ pub struct FileInfo {
     /// The download already running while the dialog shows (Options → Downloads → "Start
     /// downloading immediately while displaying Download File Info dialog").
     pub early: Option<u64>,
+    pub automatic: Option<Start>,
     /// The folders downloads were saved to before, newest first (the Save As drop list).
     pub folders: Vec<String>,
     folders_open: bool,
@@ -1267,8 +1272,10 @@ pub struct FileInfo {
     /// Set on the Save dialog's thread with its answer: whether it replaces a file
     /// (`winui::replaces_picked`).
     picked_replaces: Arc<std::sync::atomic::AtomicBool>,
+    collision_check: crate::launch::Asked<PathBuf, Result<crate::filecollision::Disk, String>>,
 }
 
+#[derive(Clone, Copy)]
 pub enum Start {
     Now,
     Later,
@@ -1300,10 +1307,18 @@ impl FileInfo {
         let name = from_browser
             .clone()
             .unwrap_or_else(|| crate::model::browser_guess(&new.url, &context));
-        let category = Category::of(&name);
-        let folder = crate::model::category_folder(category, &downloads, &dirs);
+        let category = context
+            .category
+            .as_deref()
+            .and_then(|k| Category::all().into_iter().find(|c| c.key() == k))
+            .unwrap_or_else(|| Category::of(&name));
+        let folder = context
+            .dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| crate::model::category_folder(category, &downloads, &dirs));
         let mut place = SaveAsPlace::new(Some(ctx));
-        let save_as = place.name_in(&folder, &name);
+        let save_as = place.name_in_mode(&folder, &name, false);
         let (probe, info) = match from_browser {
             Some(file_name) => (
                 Arc::new(Mutex::new(None)),
@@ -1348,6 +1363,7 @@ impl FileInfo {
             typed: false,
             replacing: ReplaceGate::default(),
             early: None,
+            automatic: None,
             folders: Vec::new(),
             folders_open: false,
             new_category: false,
@@ -1359,6 +1375,7 @@ impl FileInfo {
             direct,
             replace: None,
             picked_replaces: Default::default(),
+            collision_check: Default::default(),
         }
     }
 
@@ -1444,7 +1461,7 @@ impl FileInfo {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         // Fitted to the new folder too (#28): a deeper one leaves a long name less room.
-        self.save_as = self.place.name_in(folder, &name);
+        self.save_as = self.place.name_in_mode(folder, &name, false);
         self.edited = true;
         // MDM's name in that folder now: numbered there when taken.
         self.typed = false;
@@ -1477,6 +1494,20 @@ impl FileInfo {
     /// dialog was told to replace, while Save As still names it.
     pub fn replaces(&self) -> Option<PathBuf> {
         self.replace.clone().filter(|p| *p == self.dest())
+    }
+
+    pub(crate) fn replace_on_success(&mut self) {
+        self.edited = true;
+        self.replace = Some(self.dest());
+    }
+
+    pub(crate) fn numbered_copy(&mut self, path: &Path) {
+        self.set_saved(path, false);
+    }
+
+    pub(crate) fn collision_free(&self, ctx: &egui::Context) -> bool {
+        matches!(crate::filecollision::checked(&self.collision_check, &self.dest(), ctx),
+            Some(Ok(disk)) if !disk.taken)
     }
 
     /// "Remember this path for … category": the category and the folder to keep for it.
@@ -1533,12 +1564,12 @@ impl FileInfo {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let folder = crate::model::category_folder(c, &self.downloads, &self.dirs);
-        self.save_as = self.place.name_in(&folder, &name);
+        self.save_as = self.place.name_in_mode(&folder, &name, false);
         self.typed = false;
     }
 
     /// Whether Save As's folder is there, as looked at off the window's thread for the name it
-    /// shows now (None: not known yet). A name MDM gave has its free numbered name by then.
+    /// shows now (None: not known yet). Filename conflicts are resolved before starting.
     pub fn folder_found(&mut self) -> Option<bool> {
         self.place.folder(&mut self.save_as)
     }
@@ -1549,6 +1580,7 @@ impl FileInfo {
     /// ([`Self::replaces`], as the Save dialog's Replace? does); numbered name: as before, the
     /// download is numbered as it starts; Cancel: back to the dialog. A name MDM gave, and the
     /// early download's own place (its file finished behind the dialog), ask nothing.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn ask_replace(
         &mut self,
         ctx: &egui::Context,
@@ -1579,6 +1611,29 @@ impl FileInfo {
         ctx: &egui::Context,
         icons: &mut crate::chrome::ShellIcons,
     ) -> Outcome<Start> {
+        if let Some(start) = self.automatic {
+            if self.info.is_none()
+                && let Some(res) = self.probe.lock().unwrap().take()
+            {
+                let res = res.map(|(pi, kept)| {
+                    self.kept = kept;
+                    pi
+                });
+                if let (Ok(pi), false) = (&res, self.edited) {
+                    let folder = self.dest().parent().unwrap_or(&self.downloads).to_owned();
+                    self.save_as = self.place.name_in_mode(&folder, &pi.file_name, false);
+                }
+                self.info = Some(res);
+            }
+            if let Some(Ok(_)) = &self.info {
+                return Outcome::Done(start);
+            }
+            if self.info.is_none() {
+                return Outcome::Open;
+            }
+            // A failed lookup needs the ordinary dialog's visible error and recovery.
+            self.automatic = None;
+        }
         let folder = self
             .dest()
             .parent()
@@ -1586,7 +1641,8 @@ impl FileInfo {
             .unwrap_or_default();
         let out = self.dialog(ctx, icons);
         let out = ensure_folder(ctx, &mut self.asking, out, &folder);
-        let out = self.ask_replace(ctx, out, |d| d.is_file(), Duplicate::show);
+        // A name already there (typed or not) is asked about once, as the download starts
+        // (`filecollision`), with skip and resume too: not here as well.
         // #394: more downloads wait their turn behind this one (the browser's selected links):
         // Cancel (the button, Escape, the window's ×) asks whether they are cancelled too.
         if matches!(out, Outcome::Closed) && self.waiting > 0 && !self.cancel_ask {
@@ -1627,11 +1683,11 @@ impl FileInfo {
             if let (Ok(pi), false) = (&res, self.edited) {
                 self.category = Category::of(&pi.file_name);
                 let dir = crate::model::category_folder(self.category, &self.downloads, &self.dirs);
-                self.save_as = self.place.name_in(&dir, &pi.file_name);
+                self.save_as = self.place.name_in_mode(&dir, &pi.file_name, false);
             }
             self.info = Some(res);
         }
-        // The name numbered in its folder, once the disk has answered (#743).
+        // Take the folder lookup without changing the intended filename.
         self.place.follow(&mut self.save_as);
         self.follow_route(ctx);
         // The "Download through" line (#44) takes a row of its own while an account takes the
@@ -2930,246 +2986,6 @@ pub fn message(ctx: &egui::Context, id: &str, title: &str, text: &str) -> Outcom
     )
 }
 
-// ---- Download limit reached (light) ---------------------------------------------------------
-
-/// "Show warning before stopping downloads" (Scheduler → Download limits): says the limit was
-/// reached and when downloads go on. IDM's own wording is [unknown] (lab).
-pub struct LimitNotice {
-    lines: [String; 2],
-}
-
-impl LimitNotice {
-    pub fn new(mb: u32, hours: u32, wait: std::time::Duration) -> Self {
-        let at = crate::clock::now()
-            + chrono::Duration::from_std(wait).unwrap_or_else(|_| chrono::Duration::zero());
-        LimitNotice {
-            lines: [
-                crate::i18n::fmt(
-                    crate::i18n::t(
-                        "The download limit ({mb} MBytes every {hours} hours) has been reached.",
-                    ),
-                    &[
-                        ("mb", &crate::i18n::integer(u64::from(mb))),
-                        ("hours", &crate::i18n::integer(u64::from(hours))),
-                    ],
-                ),
-                crate::i18n::fmt(
-                    crate::i18n::t("Downloads stopped and will resume automatically at {time}."),
-                    &[(
-                        "time",
-                        &at.format(if crate::i18n::code() == "en" {
-                            "%-I:%M %p"
-                        } else {
-                            "%H:%M"
-                        })
-                        .to_string(),
-                    )],
-                ),
-            ],
-        }
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context) -> Outcome<()> {
-        window(
-            ctx,
-            "limit-notice",
-            "Download limits",
-            [420.0, 90.0],
-            false,
-            winui::LIGHT_BG(),
-            |ui, o| {
-                let p = ui.painter().clone();
-                for (i, line) in self.lines.iter().enumerate() {
-                    winui::fit(
-                        ui,
-                        &p,
-                        o.x + 11.0,
-                        o.y + 21.0 + 13.0 * i as f32,
-                        line,
-                        winui::LIGHT_TEXT(),
-                        o.x + 409.0,
-                        ("notice-line", i),
-                    );
-                }
-                let ok = winui::button_light(
-                    ui,
-                    r(o, 173.0, 57.0, 73.0, 21.0),
-                    "OK",
-                    ButtonKind::Default,
-                    false,
-                )
-                .clicked();
-                let keys = ui
-                    .input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape));
-                if ok || keys {
-                    Outcome::Closed
-                } else {
-                    Outcome::Open
-                }
-            },
-        )
-    }
-}
-
-// ---- Turn off computer countdown (light) ---------------------------------------------------
-
-/// After a queue with "Turn off computer when done": a 30 s countdown that can be cancelled
-/// (or skipped) before the computer shuts down, sleeps or hibernates. IDM's own prompt is
-/// [unknown] (lab); turning a computer off unannounced is not acceptable.
-pub struct TurnOffCountdown {
-    mode: crate::queue::TurnOff,
-    force: bool,
-    deadline: std::time::Instant,
-}
-
-impl TurnOffCountdown {
-    pub const SECONDS: u64 = 30;
-
-    pub fn new(mode: crate::queue::TurnOff, force: bool) -> Self {
-        TurnOffCountdown {
-            mode,
-            force,
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(Self::SECONDS),
-        }
-    }
-
-    /// `Done` when the time is up or "Turn off now" was pressed; `Closed` on Cancel.
-    pub fn show(&mut self, ctx: &egui::Context) -> Outcome<()> {
-        use crate::queue::TurnOff;
-        let left = self
-            .deadline
-            .saturating_duration_since(std::time::Instant::now());
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        // Whole sentences: the verb's form and place differ between languages.
-        let sentence = match self.mode {
-            TurnOff::ShutDown => crate::i18n::t("The computer will shut down in {n} seconds."),
-            TurnOff::Sleep => crate::i18n::t("The computer will go to sleep in {n} seconds."),
-            TurnOff::Hibernate => crate::i18n::t("The computer will hibernate in {n} seconds."),
-        };
-        question(
-            ctx,
-            "turn-off",
-            "Mister Download Manager",
-            [374.0, 100.0],
-            false,
-            winui::LIGHT_BG(),
-            |ui, o| {
-                let p = ui.painter().clone();
-                let black = winui::LIGHT_TEXT();
-                winui::text(
-                    &p,
-                    o.x + 11.0,
-                    o.y + 21.0,
-                    crate::i18n::t("The download queue is done."),
-                    black,
-                );
-                let line = crate::i18n::fmt(
-                    sentence,
-                    &[(
-                        "n",
-                        &crate::i18n::integer(left.as_secs() + u64::from(left.subsec_millis() > 0)),
-                    )],
-                );
-                winui::text(&p, o.x + 11.0, o.y + 34.0, &line, black);
-                // As wide as their labels in this language (#192): a longer one pushes Cancel
-                // right.
-                let [now_at, cancel_at] = winui::button_row_from_left(
-                    &p,
-                    &[("Turn off now", 94.0, 90.0), ("Cancel", 194.0, 73.0)],
-                    10.0,
-                    363.0,
-                    200.0,
-                )[..] else {
-                    unreachable!("two buttons")
-                };
-                let now = winui::button_light(
-                    ui,
-                    r(o, now_at.0, 63.0, now_at.1, 21.0),
-                    "Turn off now",
-                    ButtonKind::Normal,
-                    false,
-                )
-                .clicked();
-                let cancel = winui::button_light(
-                    ui,
-                    r(o, cancel_at.0, 63.0, cancel_at.1, 21.0),
-                    "Cancel",
-                    ButtonKind::Default,
-                    false,
-                )
-                .clicked();
-                // Enter: Cancel, the default button.
-                if cancel || winui::escape_pressed(ui) || winui::enter_pressed(ui) {
-                    Outcome::Closed
-                } else if now || left.is_zero() {
-                    Outcome::Done(())
-                } else {
-                    Outcome::Open
-                }
-            },
-        )
-    }
-
-    /// Shut down, sleep or hibernate now.
-    pub fn execute(&self) {
-        use crate::queue::TurnOff;
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            let mut cmd = std::process::Command::new("shutdown");
-            match self.mode {
-                TurnOff::ShutDown => cmd.args(["/s", "/t", "0"]),
-                TurnOff::Hibernate => cmd.arg("/h"),
-                TurnOff::Sleep => {
-                    if !crate::win32::sleep(self.force) {
-                        // i18n: why the computer could not be put to sleep (fills {error})
-                        tell_turn_off_failed(crate::i18n::t("Windows refused").to_owned());
-                    }
-                    return;
-                }
-            };
-            // "Force processes to terminate": don't wait for programs that hold it up.
-            if self.force {
-                cmd.arg("/f");
-            }
-            // No console window flashing up (CREATE_NO_WINDOW).
-            cmd.creation_flags(0x0800_0000);
-            run_or_tell(cmd);
-        }
-        // Linux: systemd, as the desktop's own menu does; forcing ignores the programs that ask
-        // to delay it (inhibitors).
-        #[cfg(target_os = "linux")]
-        {
-            let verb = match self.mode {
-                TurnOff::ShutDown => "poweroff",
-                TurnOff::Hibernate => "hibernate",
-                TurnOff::Sleep => "suspend",
-            };
-            let mut cmd = std::process::Command::new("systemctl");
-            cmd.arg(verb);
-            if self.force {
-                cmd.arg("--ignore-inhibitors");
-            }
-            run_or_tell(cmd);
-        }
-        // macOS: through System Events, as the Apple menu does (macOS has no separate
-        // hibernate: its sleep writes memory to disk as set up); apps can still object.
-        #[cfg(target_os = "macos")]
-        {
-            let script = match self.mode {
-                TurnOff::ShutDown => "tell application \"System Events\" to shut down",
-                TurnOff::Hibernate | TurnOff::Sleep => {
-                    "tell application \"System Events\" to sleep"
-                }
-            };
-            let mut cmd = std::process::Command::new("osascript");
-            cmd.args(["-e", script]);
-            run_or_tell(cmd);
-            let _ = self.force;
-        }
-    }
-}
-
 // ---- Confirm deletion of downloads (client 374 × 120, light) ----------------------------------
 
 /// "Confirm deletion of downloads": Delete / Remove / Delete All Completed. Asks whether the
@@ -3454,31 +3270,6 @@ pub fn dialog_viewport(id: &str) -> ViewportId {
 
 /// Run a shut down / sleep command and say when it fails (hibernation off, a program
 /// holding it up): it did nothing, silently.
-fn run_or_tell(mut cmd: std::process::Command) {
-    std::thread::spawn(move || match cmd.output() {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let why = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-            tell_turn_off_failed(if why.is_empty() {
-                out.status.to_string()
-            } else {
-                why
-            });
-        }
-        Err(e) => tell_turn_off_failed(e.to_string()),
-    });
-}
-
-fn tell_turn_off_failed(why: String) {
-    tell(
-        // i18n: title of the message when shutting down / sleep / hibernate failed
-        crate::i18n::mark("Turn off computer"),
-        crate::i18n::fmt(
-            crate::i18n::t("The computer could not be turned off: {error}"),
-            &[("error", &why)],
-        ),
-    );
-}
 
 /// What became of a file dragged out of Download complete (#869) or the list (#1210), when the
 /// drop target moved it (a copy or a link leaves it where it was: nothing to say).
@@ -3842,15 +3633,22 @@ pub const DUPLICATE_OVERWRITE: usize = 2;
 /// "Duplicate download link": the address is already in the list (Options → Downloads → "If a
 /// duplicate download link is added: Show a dialog and ask what to do"). `Done` with the
 /// choice, numbered as Options lists them (1 numbered name, 2 overwrite, 3 open or resume).
+/// Filename conflicts found as a download starts use the same dialog ([`Self::for_file`]); Skip
+/// (4) closes it without adding anything.
 ///
-/// The same question about a file (#1447, [`Self::file`]): the name typed in Download File
-/// Info's Save As is a file already there. Numbered name or overwrite (the file is replaced as
-/// the download completes, never before); Cancel goes back to the dialog.
+/// The same question about a name typed in Download File Info's Save As (#1447, [`Self::file`]):
+/// numbered name or overwrite (the file is replaced as the download completes, never before);
+/// Cancel goes back to the dialog.
 pub struct Duplicate {
     name: String,
     choice: usize,
-    /// About a file on the disk (its path in `name`), not an address in the list.
     file: bool,
+    /// The name typed in Save As: two answers, no Skip.
+    typed: bool,
+    overwrite: bool,
+    resume: bool,
+    note: String,
+    waiting: bool,
 }
 
 impl Duplicate {
@@ -3859,52 +3657,93 @@ impl Duplicate {
             name,
             choice: DUPLICATE_NUMBERED,
             file: false,
+            typed: false,
+            overwrite: true,
+            resume: true,
+            note: String::new(),
+            waiting: false,
         }
     }
 
     /// The question about the file at `path`, which the name typed in Save As names.
     pub fn file(path: &Path) -> Self {
         Duplicate {
-            name: display_path(path),
-            choice: DUPLICATE_NUMBERED,
             file: true,
+            typed: true,
+            ..Self::new(display_path(path))
+        }
+    }
+
+    pub(crate) fn for_file(name: String) -> Self {
+        Self {
+            choice: 4,
+            file: true,
+            ..Self::new(name)
+        }
+    }
+
+    pub(crate) fn file_state(&mut self, overwrite: bool, resume: bool, note: &str, waiting: bool) {
+        self.overwrite = overwrite;
+        self.resume = resume;
+        self.note = note.to_owned();
+        self.waiting = waiting;
+        if (self.choice == 2 && !overwrite) || (self.choice == 3 && !resume) {
+            self.choice = 4;
         }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome<usize> {
-        // A file has two answers (an address's third, open or resume the one in the list, has
-        // no download to open): the window is a row shorter.
-        let (id, title, said, answers) = if self.file {
+        let (id, title, said) = if self.typed {
             (
                 "duplicate-file",
                 // i18n: window title: the question asked when the name typed in Download File Info's Save As is a file already there
                 crate::i18n::mark("File already exists"),
                 // i18n: the question about a name typed in Save As, above the file's path; the choices are the duplicate question's (numbered name, overwrite)
                 crate::i18n::mark("A file with this name is already there:"),
-                2,
             )
-        } else {
+        } else if self.file {
             (
                 "duplicate",
                 // i18n: window title: the question asked when an address added is already in the list of downloads
                 crate::i18n::mark("Duplicate download link"),
+                crate::i18n::mark("This filename is already on disk or in the download list:"),
+            )
+        } else {
+            (
+                "duplicate",
+                crate::i18n::mark("Duplicate download link"),
                 crate::i18n::mark("This address is already in the list of downloads:"),
-                3,
             )
         };
-        let short = 20.0 * (3 - answers) as f32;
+        let labels = [
+            crate::options::DUPLICATE[1],
+            crate::options::DUPLICATE[2],
+            if self.file {
+                crate::i18n::mark("Resume existing unfinished download")
+            } else {
+                crate::i18n::mark("Open or resume the existing download")
+            },
+            crate::i18n::mark("Skip this download"),
+        ];
+        let answers = if self.typed { 2 } else { labels.len() };
+        // Each answer is a row; the typed question has no note line either.
+        let (height, buttons) = if self.typed {
+            (136.0, 104.0)
+        } else {
+            (204.0, 172.0)
+        };
         question(
             ctx,
             id,
             title,
-            [460.0, 156.0 - short],
+            [460.0, height],
             false,
             winui::LIGHT_BG(),
             |ui, o| {
                 let p = ui.painter().clone();
                 let ink = winui::LIGHT_TEXT();
                 winui::text(&p, o.x + 11.0, o.y + 21.0, crate::i18n::t(said), ink);
-                let name = if self.file {
+                let name = if self.typed {
                     crate::i18n::ltr(&self.name)
                 } else {
                     crate::i18n::isolate(&self.name)
@@ -3915,15 +3754,17 @@ impl Duplicate {
                     winui::full_on_hover(ui, rect, "duplicate-name", &self.name);
                 }
                 let mut group = Vec::new();
-                for (k, label) in crate::options::DUPLICATE
-                    .iter()
-                    .enumerate()
-                    .skip(1)
-                    .take(answers)
-                {
-                    let y = 52.0 + 20.0 * (k - 1) as f32;
+                for (j, label) in labels.iter().take(answers).enumerate() {
+                    let k = j + 1;
+                    let enabled = !self.waiting
+                        && match k {
+                            2 => self.overwrite,
+                            3 => self.resume,
+                            _ => true,
+                        };
+                    let y = 52.0 + 20.0 * j as f32;
                     let resp =
-                        winui::radio_light(ui, o + vec2(14.0, y), self.choice == k, label, true);
+                        winui::radio_light(ui, o + vec2(14.0, y), self.choice == k, label, enabled);
                     if resp.clicked() {
                         self.choice = k;
                     }
@@ -3932,26 +3773,45 @@ impl Duplicate {
                 if let Some(j) = winui::radio_keys(ui, &group) {
                     self.choice = j + 1;
                 }
+                if !self.typed {
+                    let (rect, cut) =
+                        winui::text_fit(&p, o.x + 11.0, o.y + 151.0, &self.note, ink, o.x + 449.0);
+                    if cut {
+                        winui::full_on_hover(ui, rect, "duplicate-note", &self.note);
+                    }
+                }
                 let ok = winui::button_light(
                     ui,
-                    r(o, 295.0, 124.0 - short, 73.0, 21.0),
+                    r(o, 295.0, buttons, 73.0, 21.0),
                     "OK",
-                    ButtonKind::Default,
+                    if self.waiting {
+                        ButtonKind::Disabled
+                    } else {
+                        ButtonKind::Default
+                    },
                     false,
                 )
                 .clicked();
                 let cancel = winui::button_light(
                     ui,
-                    r(o, 376.0, 124.0 - short, 73.0, 21.0),
+                    r(o, 376.0, buttons, 73.0, 21.0),
                     "Cancel",
-                    ButtonKind::Normal,
+                    if self.waiting {
+                        ButtonKind::Disabled
+                    } else {
+                        ButtonKind::Normal
+                    },
                     false,
                 )
                 .clicked();
-                if cancel || winui::escape_pressed(ui) {
+                if !self.waiting && (cancel || winui::escape_pressed(ui)) {
                     Outcome::Closed
-                } else if ok || winui::enter_pressed(ui) {
-                    Outcome::Done(self.choice)
+                } else if !self.waiting && (ok || winui::enter_pressed(ui)) {
+                    if self.choice == 4 {
+                        Outcome::Closed
+                    } else {
+                        Outcome::Done(self.choice)
+                    }
                 } else {
                     Outcome::Open
                 }
@@ -3959,7 +3819,6 @@ impl Duplicate {
         )
     }
 }
-
 /// The queue selection panel (Options → Downloads → "Show queue selection panel on pressing
 /// Download Later" / "on closing batch download dialogs"): which queue the downloads join, and
 /// whether it starts now. `Done((queue, start))`; Cancel leaves them in the list, in no queue.
@@ -5374,6 +5233,35 @@ mod tests {
             &egui::Context::default(),
         );
         (fi, rt)
+    }
+
+    #[test]
+    fn file_info_preserves_occupied_filename_until_a_choice_is_made() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut fi, _rt) = file_info(d.path(), "taken.bin");
+        let taken = fi.dest();
+        std::fs::create_dir_all(taken.parent().unwrap()).unwrap();
+        std::fs::write(&taken, b"finished").unwrap();
+        // A fresh lookup now observes the occupied original name.
+        fi.save_as = fi
+            .place
+            .name_in_mode(taken.parent().unwrap(), "taken.bin", false);
+        assert_eq!(answered(&mut fi.place, &mut fi.save_as), Some(true));
+        let ctx = egui::Context::default();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(Ok(disk)) =
+                crate::filecollision::checked(&fi.collision_check, &fi.dest(), &ctx)
+            {
+                assert!(disk.taken);
+                break;
+            }
+            assert!(std::time::Instant::now() < end);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(fi.dest(), taken);
+        assert!(!fi.collision_free(&ctx), "cannot start behind the question");
+        assert_eq!(std::fs::read(taken).unwrap(), b"finished");
     }
 
     /// #1088: a file the Save dialog asked "Replace?" about, answered Yes, is the one the

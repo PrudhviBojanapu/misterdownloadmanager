@@ -446,9 +446,22 @@ mod tests {
         // Downloaded and checked as Update now does: the signed list, then the file.
         let dir = tempfile::tempdir().unwrap();
         let progress = crate::update::Progress::default();
-        let file = crate::update::fetch(&found.files, ZIP, dir.path(), &net, &progress)
-            .await
-            .unwrap();
+        // Upstream-signed fixtures never pass the fork's own trust root.
+        let refused = crate::update::fetch(&found.files, ZIP, dir.path(), &net, &progress).await;
+        assert!(matches!(refused, Err(Error::BadSignature)), "{refused:?}");
+        let fixture_key = |sums: &[u8], sig: &[u8]| {
+            crate::signed_by(include_str!("../keys/mdm-release.asc"), sums, sig)
+        };
+        let file = crate::update::fetch_signed(
+            &found.files,
+            ZIP,
+            dir.path(),
+            &net,
+            &progress,
+            fixture_key,
+        )
+        .await
+        .unwrap();
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(ZIP);
@@ -456,7 +469,15 @@ mod tests {
             std::fs::read(file).unwrap(),
             std::fs::read(fixture).unwrap()
         );
-        let wrong = crate::update::fetch(&found.files, SETUP, dir.path(), &net, &progress).await;
+        let wrong = crate::update::fetch_signed(
+            &found.files,
+            SETUP,
+            dir.path(),
+            &net,
+            &progress,
+            fixture_key,
+        )
+        .await;
         assert!(matches!(wrong, Err(Error::BadChecksum)), "{wrong:?}");
         // yt-dlp's release from its pages: its real list, signed by its key.
         let ytdlp = latest_release(

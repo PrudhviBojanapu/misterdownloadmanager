@@ -1,9 +1,5 @@
-//! The interface language (M16, D-019). craft-i18n reads MDM's catalogs (`i18n/<locale>.tsv`,
-//! embedded at build time) and looks the English source text up: a missing translation is the
-//! English itself. The language follows Windows' display language until the user picks one in
-//! View → Language; numbers are grouped and pointed as the interface language writes them
-//! (CLDR, through craft-i18n's format), or as the system region does when it is in that same
-//! language (#128).
+//! English source strings without embedded translation catalogs. Unicode file names and
+//! regional date/time formatting remain independent of the interface language.
 //!
 //! `t("Options")` for a label, `tc("menu", "&Options")` where the same English needs different
 //! translations, `tn(n, "{n} file", "{n} files")` for counts. Text that is data (file names,
@@ -13,44 +9,13 @@
 use std::sync::{OnceLock, RwLock};
 
 pub use craft_i18n::Lang;
-use craft_i18n::{Digits, Embedded, Format, I18n, Region};
+use craft_i18n::{Digits, Format, I18n, Region};
 
-/// Every catalog in one brotli stream, and each locale's code and range in the unpacked text
-/// (build.rs).
-static PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/catalogs.br"));
-static RANGES: &[(&str, usize, usize)] = include!(concat!(env!("OUT_DIR"), "/catalogs.rs"));
-
-/// The catalogs as craft-i18n reads them: unpacked once (about 6 MB, 11 ms) and kept for the
-/// program's life, as craft-i18n wants them all from the start (#25).
-fn catalogs() -> &'static Embedded {
-    static C: OnceLock<&'static Embedded> = OnceLock::new();
-    C.get_or_init(|| {
-        let mut text = String::new();
-        let unpacked = std::io::Read::read_to_string(
-            &mut brotli_decompressor::Decompressor::new(PACKED, 64 * 1024),
-            &mut text,
-        );
-        if let Err(e) = unpacked {
-            // Built in at compile time, so this can't happen; English then, rather than a crash.
-            eprintln!("translations: unpacking failed ({e})");
-            return &[];
-        }
-        let text: &'static str = Box::leak(text.into_boxed_str());
-        let embedded: Vec<(&'static str, &'static str, &'static str)> = RANGES
-            .iter()
-            .filter_map(|&(code, start, end)| Some((code, "", text.get(start..end)?)))
-            .collect();
-        Box::leak(embedded.into_boxed_slice())
-    })
-}
-
-/// The catalogs, indexed once.
+/// The English source language and its formatting helpers; no catalogs are loaded.
 pub fn i18n() -> &'static I18n {
     static I: OnceLock<I18n> = OnceLock::new();
     I.get_or_init(|| {
-        let catalogs = catalogs();
-        let offered: Vec<&str> = catalogs.iter().map(|(code, _, _)| *code).collect();
-        let (i, problems) = I18n::new(catalogs, &offered);
+        let (i, problems) = I18n::new(&[], &[]);
         for p in problems {
             eprintln!("translations: {p}");
         }
@@ -60,30 +25,19 @@ pub fn i18n() -> &'static I18n {
 
 static CURRENT: RwLock<Option<Lang>> = RwLock::new(None);
 
-/// The interface language: the one chosen, else Windows' display language (English when no
-/// catalog matches it).
+/// The English interface language.
 pub fn lang() -> Lang {
     if let Some(l) = *CURRENT.read().unwrap() {
         return l;
     }
-    // A test asserts the texts it reads: the interface language must not depend on the machine
-    // the tests run on (Windows' display language is Chinese on many contributors' PCs, where
-    // every English assertion failed). Tests that want another language set one.
-    #[cfg(test)]
-    let l = i18n()
-        .from_code("en")
-        .unwrap_or_else(|| i18n().system_lang());
-    #[cfg(not(test))]
-    let l = i18n().system_lang();
+    let l = i18n().from_code("en").expect("English source language");
     use_lang(l);
     l
 }
 
-/// Use `code` (a catalog's locale, e.g. `ar`, `pt-br`), or follow Windows again with `None`.
-pub fn set_lang(code: Option<&str>) {
-    let l = code
-        .and_then(|c| i18n().from_code(c))
-        .unwrap_or_else(|| i18n().system_lang());
+/// Old saved language preferences migrate to English.
+pub fn set_lang(_code: Option<&str>) {
+    let l = i18n().from_code("en").expect("English source language");
     use_lang(l);
 }
 
@@ -91,7 +45,7 @@ pub fn set_lang(code: Option<&str>) {
 /// written its way from now on.
 fn use_lang(l: Lang) {
     *CURRENT.write().unwrap() = Some(l);
-    i18n().set_format(number_format(i18n().code(l), &Region::system()));
+    i18n().set_format(Format::new(&Region::system(), Digits::Locale));
 }
 
 /// How numbers are written in the interface language `code` (#128): as the system region
@@ -387,6 +341,19 @@ pub fn system_code() -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_english_is_offered_without_losing_unicode_names() {
+        assert_eq!(
+            languages()
+                .iter()
+                .map(|(_, code, _)| *code)
+                .collect::<Vec<_>>(),
+            ["en"]
+        );
+        assert_eq!(t("Downloads"), "Downloads");
+        assert_eq!(isolate("भारत.zip"), "\u{2068}भारत.zip\u{2069}");
+    }
+
     const LRI: char = '\u{2066}';
     const FSI: char = '\u{2068}';
     const PDI: char = '\u{2069}';
@@ -600,28 +567,12 @@ mod tests {
         assert_eq!(number_format("zh-hans", &us).integer(10_200), "10,200");
     }
 
-    /// Counts, sizes and speeds take their numbers from that format, beside the catalogs' units
-    /// (the way the list, the progress window and the playlist dialog write them).
     #[test]
-    fn counts_sizes_and_speeds_in_the_interface_language() {
-        let us = Region::from_tag("en-US");
-        let codes: Vec<&str> = catalogs().iter().map(|c| c.0).collect();
-        let (i, _) = I18n::new(catalogs(), &codes);
-        let fr_count = format!("10{NNBSP}200");
-        for (code, count, size, speed) in [
-            ("de", "10.200", "1,50", "512,000"),
-            ("fr", fr_count.as_str(), "1,50", "512,000"),
-            ("ar", "10,200", "1.50", "512.000"),
-            ("hi", "10,200", "1.50", "512.000"),
-        ] {
-            let l = i.from_code(code).expect(code);
-            i.set_format(number_format(code, &us));
-            let videos = craft_i18n::strip_isolates(&i.trn(l, 10_200, "{n} video", "{n} videos"));
-            assert!(videos.contains(count), "{code}: {videos}");
-            let mb = craft_i18n::strip_isolates(&i.measure(l, 1.5, 2, "{n} MB"));
-            assert!(mb.contains(size), "{code}: {mb}");
-            let rate = craft_i18n::strip_isolates(&i.measure(l, 512.0, 3, "{n} KB/sec"));
-            assert!(rate.contains(speed), "{code}: {rate}");
-        }
+    fn english_numbers_and_units_need_no_catalog() {
+        assert_eq!(integer(10_200), "10200");
+        assert_eq!(decimal(1.5, 2), "1.50");
+        assert_eq!(decimal(512.0, 3), "512.000");
+        assert_eq!(percent(0.25, 1), "25.0%");
+        assert_eq!(t("MB"), "MB");
     }
 }

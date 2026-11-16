@@ -30,6 +30,52 @@ const APP_NAME = ext.runtime.getBrowserInfo
 
 const t = (key, ...subs) => ext.i18n.getMessage(key, subs) || key;
 
+// Unpacked Edge extensions have no update_url support. The signed app installer updates
+// their bundled files; reload only our own newer local manifest, never remote JavaScript.
+const BUNDLE_UPDATE_ALARM = "mdm-bundled-extension-update";
+let bundleCheck = null;
+function checkBundledUpdate() {
+  if (!ext.management?.getSelf || !ext.runtime.reload) return Promise.resolve(false);
+  if (bundleCheck) return bundleCheck;
+  bundleCheck = (async () => {
+    if ((await ext.management.getSelf()).installType !== "development") return false;
+    const response = await fetch(ext.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!response.ok) throw new Error(`Local extension manifest: HTTP ${response.status}`);
+    const disk = await response.json();
+    const version = disk.version;
+    if (disk.key !== ext.runtime.getManifest().key || !newerBundleVersion(version, VERSION)) return false;
+    // Let an installer finish copying the other bundled files before reloading.
+    await new Promise((resolve) => setTimeout(resolve, 10000));
+    const confirmed = await fetch(ext.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!confirmed.ok) throw new Error(`Local extension manifest: HTTP ${confirmed.status}`);
+    const stable = await confirmed.json();
+    if (stable.version !== version || stable.key !== disk.key) return false;
+    ext.runtime.reload();
+    return true;
+  })().catch((error) => {
+    console.warn("MDM bundled extension update failed:", error);
+    return false;
+  }).finally(() => { bundleCheck = null; });
+  return bundleCheck;
+}
+
+function newerBundleVersion(candidate, current) {
+  if (typeof candidate !== "string" || !/^\d+(?:\.\d+){0,3}$/.test(candidate)) return false;
+  const a = candidate.split(".").map(Number), b = current.split(".").map(Number);
+  for (let i = 0; i < 4; i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return false;
+}
+
+if (ext.alarms) {
+  ext.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === BUNDLE_UPDATE_ALARM) return checkBundledUpdate();
+  });
+  ext.alarms.create(BUNDLE_UPDATE_ALARM, { periodInMinutes: 5 });
+}
+checkBundledUpdate();
+
 // ---- the native host ---------------------------------------------------------------------
 
 // How long an answer may take: the host starts Mister Download Manager when it isn't running

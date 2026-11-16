@@ -34,6 +34,55 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Send a typed operation to the running app. JSON text, or "-" to read stdin.
+    /// Includes add, properties, set_properties, retry, move, rename, settings,
+    /// set_settings, categories, set_category, delete_category, queues, set_queue,
+    /// delete_queue, queue_items, start_queue, stop_queue, accounts, torbox, remote_status,
+    /// pair, stop_pairing, revoke_device, video_lookup, video_poll, media_add,
+    /// playlist_lookup, torrent_lookup, job, playlist_add, torrent_add and torrent actions.
+    Control {
+        /// A JSON operation, e.g. '{"op":"settings"}'. Use stdin for credentials.
+        operation: String,
+    },
+    /// Add to the running app without dialogs (unlike standalone `get`).
+    Add {
+        url: String,
+        #[arg(long)]
+        folder: Option<String>,
+        #[arg(long)]
+        file_name: Option<String>,
+        #[arg(long)]
+        later: bool,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        queue: Option<String>,
+        /// Skip by default; add numbers a copy; replace swaps the HTTP file only on success.
+        #[arg(long, default_value = "skip", value_parser = ["skip", "add", "replace", "resume"])]
+        duplicate: String,
+    },
+    /// Read a download's properties, without credentials.
+    Properties { id: u64 },
+    /// Read retained functional settings, without credentials.
+    Settings,
+    /// List categories, their file types and destinations.
+    Categories,
+    /// List basic queues, concurrency and ordered download ids.
+    Queues,
+    /// Retry stopped or failed downloads.
+    Retry {
+        #[arg(required = true)]
+        ids: Vec<u64>,
+    },
+    /// Move finished or not-yet-started downloads. Accepted moves finish asynchronously.
+    Move {
+        #[arg(required = true)]
+        ids: Vec<u64>,
+        #[arg(long)]
+        folder: String,
+    },
+    /// Rename now or defer until completion.
+    Rename { id: u64, name: String },
     /// Download a URL. Ctrl+C pauses; continue later with `resume`.
     Get {
         /// The address to download (http or https).
@@ -328,6 +377,13 @@ impl std::error::Error for Reported {}
 fn ask(cmd: mdm_ipc::Command) -> anyhow::Result<()> {
     let answer = mdm_ipc::request(&cmd)
         .map_err(|e| anyhow::anyhow!("Mister Download Manager isn't running ({e})"))?;
+    if cmd.wants_reply()
+        && !serde_json::from_str::<serde_json::Value>(&answer).is_ok_and(|v| v.is_object())
+    {
+        anyhow::bail!(
+            "the app did not return an operation result ({answer}); it may be busy, refusing access, or too old"
+        );
+    }
     println!("{answer}");
     if serde_json::from_str::<mdm_ipc::api::ErrorAnswer>(&answer).is_ok() {
         return Err(Reported.into());
@@ -365,6 +421,13 @@ fn pair() -> anyhow::Result<()> {
 }
 
 /// An automation API action on the running app's downloads; prints its answer.
+fn control(operation: mdm_ipc::automation::Operation) -> anyhow::Result<()> {
+    ask(mdm_ipc::Command {
+        operation: Some(operation),
+        ..Default::default()
+    })
+}
+
 fn act(action: &str, ids: Vec<u64>) -> anyhow::Result<()> {
     ask(mdm_ipc::Command {
         action: Some(action.into()),
@@ -1127,6 +1190,46 @@ async fn run(cmd: Cmd, json: bool, accounts: Option<&dyn Accounts>) -> anyhow::R
                 }
             }
         }
+        Cmd::Control { operation } => {
+            let operation = if operation == "-" {
+                use std::io::Read;
+                let mut text = String::new();
+                std::io::stdin()
+                    .take(mdm_ipc::MAX_MESSAGE as u64 + 1)
+                    .read_to_string(&mut text)?;
+                anyhow::ensure!(text.len() <= mdm_ipc::MAX_MESSAGE, "operation is too large");
+                text
+            } else {
+                operation
+            };
+            control(serde_json::from_str(&operation)?)
+        }
+        Cmd::Add {
+            url,
+            folder,
+            file_name,
+            later,
+            category,
+            queue,
+            duplicate,
+        } => control(mdm_ipc::automation::Operation::Add {
+            download: mdm_ipc::automation::AddDownload {
+                url,
+                folder,
+                file_name,
+                later,
+                category,
+                queue,
+                duplicate: serde_json::from_value(serde_json::Value::String(duplicate))?,
+            },
+        }),
+        Cmd::Properties { id } => control(mdm_ipc::automation::Operation::Properties { id }),
+        Cmd::Settings => control(mdm_ipc::automation::Operation::Settings {}),
+        Cmd::Categories => control(mdm_ipc::automation::Operation::Categories {}),
+        Cmd::Queues => control(mdm_ipc::automation::Operation::Queues {}),
+        Cmd::Retry { ids } => control(mdm_ipc::automation::Operation::Retry { ids }),
+        Cmd::Move { ids, folder } => control(mdm_ipc::automation::Operation::Move { ids, folder }),
+        Cmd::Rename { id, name } => control(mdm_ipc::automation::Operation::Rename { id, name }),
         Cmd::Status => ask(mdm_ipc::Command {
             query: Some("list".into()),
             ..Default::default()
@@ -1585,6 +1688,39 @@ fn torrent_source(s: &str) -> anyhow::Result<mdm_torrent::Source> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn control_rejects_unknown_fields_before_contacting_the_app() {
+        let error = run(
+            Cmd::Control {
+                operation: r#"{"op":"settings","password":"oops"}"#.into(),
+            },
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+    #[test]
+    fn app_control_parses_explicit_duplicate_policy_and_rejects_unknown_policy() {
+        let cli = Cli::try_parse_from([
+            NAME,
+            "add",
+            "https://example.com/a",
+            "--later",
+            "--duplicate",
+            "resume",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.cmd, Cmd::Add { later: true, duplicate, .. } if duplicate == "resume")
+        );
+        assert!(
+            Cli::try_parse_from([NAME, "add", "https://example.com/a", "--duplicate", "ask",])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([NAME, "control", "-"]).is_ok());
+    }
 
     /// #1240: `video-get --quality` takes a height as people write it.
     #[test]

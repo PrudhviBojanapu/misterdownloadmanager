@@ -315,13 +315,13 @@ mod tests {
     }
 
     #[test]
-    fn texts_follow_the_browser() {
+    fn remote_dashboard_stays_english_for_every_browser_locale() {
         let de = page_texts("de-DE,de;q=0.9,en;q=0.8");
-        assert_eq!(de.lang, "de");
+        assert_eq!(de.lang, "en");
         assert!(!de.rtl);
         let ar = page_texts("ar-TN");
-        assert_eq!(ar.lang, "ar");
-        assert!(ar.rtl);
+        assert_eq!(ar.lang, "en");
+        assert!(!ar.rtl);
         assert_eq!(page_texts("en-US").texts["Pair"], "Pair");
         assert!(de.texts.contains_key("unit:{n} MB"));
     }

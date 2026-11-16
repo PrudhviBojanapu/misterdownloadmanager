@@ -1,3 +1,6 @@
+//! Windows fork: Direct3D 12 only, with WARP as the fallback; OpenGL is not linked.
+//! The non-Windows upstream path below retains its renderer compatibility.
+//!
 //! What draws the windows (#89, #206): OpenGL (eframe's glow), or the system's own graphics API
 //! through eframe's wgpu with that one backend only ([`GPU`]): Direct3D 12 on Windows, Vulkan on
 //! Linux (Wayland and X11 windows alike), Metal on macOS. View → Draw with picks one, from the
@@ -114,6 +117,12 @@ pub const DEFAULT: Api = if cfg!(all(windows, not(target_arch = "x86"))) {
 /// What the setting means here: OpenGL, or this system's API; [`DEFAULT`] when nothing was
 /// chosen, or another system's API was (a settings file brought from another computer).
 pub fn chosen(setting: Option<Api>) -> Api {
+    #[cfg(windows)]
+    {
+        let _ = setting;
+        Api::Direct3D
+    }
+    #[cfg(not(windows))]
     setting
         .filter(|&a| a == Api::OpenGl || Some(a) == GPU)
         .unwrap_or(DEFAULT)
@@ -124,7 +133,7 @@ pub fn chosen(setting: Option<Api>) -> Api {
 /// Windows 10 and 11, draws MDM right on the cards whose OpenGL froze, crashed or drew garbage).
 /// Linux and macOS keep their plans: OpenGL is their default (#206), Mesa's software Vulkan is
 /// no better a way out than its OpenGL, and macOS has no software Metal.
-pub const WATCH_GL: bool = cfg!(windows);
+pub const WATCH_GL: bool = false;
 
 /// How long a watched start with the system's API may take to its first frame before MDM starts
 /// again the next way (a driver stuck in its first present, a window that never shows). Generous:
@@ -184,6 +193,7 @@ fn parse(name: &str) -> Option<Attempt> {
         };
     }
     let (api, adapters) = match name.as_str() {
+        #[cfg(not(windows))]
         "opengl" | "gl" | "glow" => return Some(Attempt::OpenGl),
         "direct3d" | "d3d" | "d3d12" | "dx12" => (Some(Api::Direct3D), Adapters::Hardware),
         "warp" => (Some(Api::Direct3D), Adapters::Software),
@@ -217,7 +227,7 @@ impl Known {
         Known {
             card_failed: failed_before(Way::Card),
             software_failed: failed_before(Way::Software),
-            gl_failed: failed_before(Way::OpenGl),
+            gl_failed: !cfg!(windows) && failed_before(Way::OpenGl),
         }
     }
 
@@ -231,7 +241,7 @@ impl Known {
         Known {
             card_failed: any(Way::Card),
             software_failed: any(Way::Software),
-            gl_failed: any(Way::OpenGl),
+            gl_failed: !cfg!(windows) && any(Way::OpenGl),
         }
     }
 }
@@ -312,6 +322,42 @@ impl Because {
 /// on its software renderer (unless that failed too: then OpenGL first, nothing else drew),
 /// whatever the setting; an override still gets it. A card without Direct3D 12 on Windows:
 /// `[OpenGL, any]`, then `[WARP, OpenGL]` once OpenGL failed there.
+#[cfg(windows)]
+pub fn plan(_setting: Option<Api>, overridden: Option<&str>, known: Known) -> Plan {
+    let forced = overridden.and_then(|name| {
+        let parsed = parse(name);
+        if parsed.is_none() {
+            tracing::warn!("renderer {name:?} is not available; this build uses Direct3D 12");
+        }
+        parsed
+    });
+    let hardware = Attempt::Gpu(Adapters::Hardware);
+    let software = Attempt::Gpu(Adapters::Software);
+    let attempts = match forced {
+        Some(Attempt::Gpu(Adapters::Software)) => vec![software],
+        Some(a @ Attempt::Gpu(_)) => vec![a, software],
+        _ if known.card_failed && !known.software_failed => vec![software],
+        _ => vec![hardware, software],
+    };
+    Plan {
+        watch: if forced.is_none() && !known.card_failed && attempts.len() > 1 {
+            vec![hardware]
+        } else {
+            Vec::new()
+        },
+        attempts,
+        because: if forced.is_some() {
+            Because::Override
+        } else if known.card_failed {
+            Because::FailedBefore
+        } else {
+            Because::Default
+        },
+        gl_checked: false,
+    }
+}
+
+#[cfg(not(windows))]
 pub fn plan(setting: Option<Api>, overridden: Option<&str>, known: Known) -> Plan {
     let forced = overridden.and_then(|o| {
         let a = parse(o);
@@ -1300,6 +1346,7 @@ fn stall_test() {
 
 /// The version OpenGL says it is; `MDM_TEST_GL_VERSION=2.1` in off-screen test copies, as an old
 /// card's driver says.
+#[cfg(not(windows))]
 fn gl_version(gl: &eframe::glow::Context) -> GlVersion {
     use eframe::glow::HasContext as _;
     let v = gl.version();
@@ -1335,6 +1382,7 @@ fn gl_version(gl: &eframe::glow::Context) -> GlVersion {
 /// remembered and MDM starts again without it (as after a start that drew nothing: the next
 /// start's plan passes over it). Known already, OpenGL draws as the last way, the others having
 /// failed, and goes on: the windows always open. `checked`: the plan's `gl_checked`.
+#[cfg(not(windows))]
 fn check_gl(gl: &eframe::glow::Context, checked: bool, driver: &str) {
     let Some(why) = gl_unfit(gl_version(gl), cfg!(windows)) else {
         return;
@@ -1502,7 +1550,10 @@ fn pacing_known(cc: &eframe::CreationContext<'_>) {
     #[cfg(not(gpu))]
     let gpu_vendor: Option<String> = None;
     let vendor = gl_vendor.or(gpu_vendor).unwrap_or_default();
+    #[cfg(not(windows))]
     let gl = cc.gl.is_some();
+    #[cfg(windows)]
+    let gl = false;
     PACED.store(!gl, Ordering::Relaxed);
     let at_most = (1.0 / FRAME_PACE.as_secs_f64()).round();
     let system = if swaps == Swaps::NoneWait {
@@ -1788,6 +1839,7 @@ pub fn run<A: eframe::App + 'static>(
 /// The window's options for one way of drawing.
 fn configure(opts: &mut eframe::NativeOptions, attempt: Attempt) {
     match attempt {
+        #[cfg(not(windows))]
         Attempt::OpenGl => {
             opts.renderer = eframe::Renderer::Glow;
             // MDM_TEST_NO_OPENGL=1 (off-screen test copies): a pixel format no OpenGL has, as on
@@ -1797,6 +1849,11 @@ fn configure(opts: &mut eframe::NativeOptions, attempt: Attempt) {
                 opts.depth_buffer = 255;
                 opts.stencil_buffer = 255;
             }
+        }
+        #[cfg(windows)]
+        Attempt::OpenGl => {
+            opts.renderer = eframe::Renderer::Wgpu;
+            opts.wgpu_options = gpu::options(Adapters::Any);
         }
         #[cfg(gpu)]
         Attempt::Gpu(adapters) => {
@@ -1838,8 +1895,7 @@ fn started(cc: &eframe::CreationContext<'_>, attempt: Attempt, why: String, gl_c
     // with "OpenGL" alone).
     #[cfg(unix)]
     use crate::unix::gl_driver;
-    #[cfg(windows)]
-    use crate::win32::gl_driver;
+    #[cfg(not(windows))]
     let detail = gpu
         .or_else(|| {
             cc.gl.as_ref().map(|gl| {
@@ -1854,11 +1910,16 @@ fn started(cc: &eframe::CreationContext<'_>, attempt: Attempt, why: String, gl_c
             })
         })
         .unwrap_or_else(|| attempt.name().to_owned());
+    #[cfg(windows)]
+    let detail = gpu.unwrap_or_else(|| attempt.name().to_owned());
+    #[cfg(windows)]
+    let _ = gl_checked;
     tracing::info!(
         "drawing with {detail}, {} ms after start ({why})",
         since_start()
     );
     // An OpenGL that can't draw MDM: MDM starts again without it (#835).
+    #[cfg(not(windows))]
     if let Some(gl) = &cc.gl {
         check_gl(gl, gl_checked, &gl_driver(gl));
     }
@@ -2191,7 +2252,43 @@ fn choose(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_gl_preference_migrates_to_direct3d_with_warp_fallback() {
+        let plan = plan(Some(Api::OpenGl), None, Known::default());
+        assert_eq!(
+            plan.attempts,
+            [
+                Attempt::Gpu(Adapters::Hardware),
+                Attempt::Gpu(Adapters::Software)
+            ]
+        );
+        assert_eq!(chosen(Some(Api::OpenGl)), Api::Direct3D);
+        assert_eq!(parse("opengl"), None);
+    }
+
+    #[test]
+    fn failed_hardware_uses_warp_without_loading_opengl() {
+        let plan = plan(
+            None,
+            None,
+            Known {
+                card_failed: true,
+                ..Known::default()
+            },
+        );
+        assert_eq!(plan.attempts, [Attempt::Gpu(Adapters::Software)]);
+        assert!(
+            plan.watch.is_empty(),
+            "the last fallback must not restart forever"
+        );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 

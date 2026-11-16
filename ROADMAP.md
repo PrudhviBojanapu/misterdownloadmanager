@@ -8,6 +8,12 @@ issue, where the details and the discussion are. Released changes are in
 
 ✅ done · 🔄 being built · 📋 planned · 🔍 looking into it
 
+## Fork maintenance
+
+- ✅ Upstream's release pipeline restricted to Windows x64 on standard GitHub-hosted runners:
+  workspace/extension/download checks, installer and ZIPs, crash symbols, checksums, build
+  provenance and changelog notes. Version tags publish releases; manual runs only keep artifacts.
+
 ## Version 0.5.0
 
 Everything below ships together, in version 0.5.0.

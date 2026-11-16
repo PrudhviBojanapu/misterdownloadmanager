@@ -3992,29 +3992,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lazy-regex"
-version = "3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0a2cce8a22920a29fdcc8c9170aa5d29edd9fbcf8bea856e24c2cb1c2419f67"
-dependencies = [
- "lazy-regex-proc_macros",
- "once_cell",
- "regex",
-]
-
-[[package]]
-name = "lazy-regex-proc_macros"
-version = "3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f1e4b1f1d8c71edb4ff2b2150ec4606445fd2ddf67ddc097655daf59286baa6"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "syn 3.0.9",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4564,12 +4541,10 @@ dependencies = [
 
 [[package]]
 name = "mdm-app"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "arboard",
  "base64 0.23.1",
- "brotli 9.1.1",
- "brotli-decompressor 6.2.0",
  "chrono",
  "craft-atomic",
  "craft-i18n",
@@ -4583,12 +4558,9 @@ dependencies = [
  "image",
  "libc",
  "mdm-cli",
- "mdm-cnl",
  "mdm-crash",
  "mdm-debrid",
  "mdm-engine",
- "mdm-extract",
- "mdm-geo",
  "mdm-ipc",
  "mdm-labserver",
  "mdm-remote",
@@ -4604,7 +4576,6 @@ dependencies = [
  "regex",
  "reqwest 0.13.5",
  "rfd",
- "roxmltree 0.20.0",
  "security-framework",
  "serde",
  "serde_json",
@@ -4630,7 +4601,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-cli"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -4649,7 +4620,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-cnl"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "aes",
  "axum",
@@ -4662,7 +4633,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-crash"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "breakpad-symbols",
  "chrono",
@@ -4687,7 +4658,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-debrid"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "bytes",
  "chrono",
@@ -4707,7 +4678,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-engine"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4738,12 +4709,10 @@ dependencies = [
  "sha1",
  "sha2",
  "socket2",
- "suppaftp",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-rustls",
  "tokio-util",
  "tower-layer",
  "tower-service",
@@ -4757,7 +4726,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-extract"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "flate2",
  "lzma-rust2",
@@ -4770,7 +4739,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-geo"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "lzma-rust2",
  "png 0.18.1",
@@ -4779,7 +4748,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-ipc"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "craft-atomic",
  "dirs 7.0.0",
@@ -4791,7 +4760,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-labserver"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -4820,7 +4789,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-mcp"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "mdm-ipc",
  "rmcp",
@@ -4834,7 +4803,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-nmhost"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "chrono",
  "mdm-ipc",
@@ -4845,7 +4814,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-remote"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -4866,7 +4835,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-tools"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -4893,7 +4862,7 @@ dependencies = [
 
 [[package]]
 name = "mdm-torrent"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "flate2",
@@ -8030,23 +7999,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "suppaftp"
-version = "12.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b58fcf921745cca6f0127c9f822069947da8c6dbeff52e9004750bcc448171f"
-dependencies = [
- "async-trait",
- "chrono",
- "lazy-regex",
- "log",
- "pin-project",
- "rustls-pki-types",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
-]
 
 [[package]]
 name = "svgtypes"

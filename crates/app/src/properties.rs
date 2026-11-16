@@ -584,8 +584,14 @@ mod tests {
         "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
             .clone_into(&mut props.address);
         assert!(!props.address_ok(&file));
-        "ftp://example.com/file.iso".clone_into(&mut props.address);
-        assert!(props.address_ok(&file));
+        for scheme in ["ftp", "ftps", "ftpes"] {
+            props.address = format!("{scheme}://example.com/file.iso");
+            assert!(!props.address_ok(&file));
+        }
+        for scheme in ["http", "https"] {
+            props.address = format!("{scheme}://example.com/file.iso");
+            assert!(props.address_ok(&file));
+        }
         let mut done = item("https://example.com/file.iso");
         done.status = Status::Complete;
         assert!(!props.address_editable(&done));

@@ -15,6 +15,28 @@ use mdm_tools::update::{Arch, Install, Progress};
 /// The switch the updated copy starts with.
 pub const UPDATED: &str = "/updated";
 
+/// Automatic restarts wait for a continuous quiet period, not gaps between queued files.
+#[derive(Default)]
+pub struct IdleGate(Mutex<Option<Instant>>);
+
+impl IdleGate {
+    pub fn set_idle(&self, idle: bool) {
+        let mut since = self.0.lock().unwrap();
+        if !idle {
+            *since = None;
+        } else if since.is_none() {
+            *since = Some(Instant::now());
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .is_some_and(|since| since.elapsed() >= Duration::from_secs(30))
+    }
+}
+
 /// What follows once the file is in place.
 #[derive(Debug)]
 pub enum Next {
@@ -62,6 +84,7 @@ pub struct Job {
     slot: Arc<Mutex<Option<Result<Next, String>>>>,
     /// The file is downloaded and being put in place (Cancel can't stop that).
     installing: Arc<AtomicBool>,
+    waiting_for_idle: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -74,6 +97,21 @@ impl Drop for Job {
 }
 
 impl Job {
+    #[cfg(test)]
+    pub(crate) fn finished_for_test(
+        rt: &tokio::runtime::Handle,
+        result: Result<Next, String>,
+    ) -> Job {
+        Job {
+            progress: Arc::new(Progress::default()),
+            slot: Arc::new(Mutex::new(Some(result))),
+            installing: Arc::new(AtomicBool::new(false)),
+            waiting_for_idle: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            task: rt.spawn(async {}),
+        }
+    }
+
     pub fn start(
         rt: &tokio::runtime::Handle,
         ctx: &egui::Context,
@@ -81,9 +119,21 @@ impl Job {
         assets: Vec<(String, String)>,
         name: String,
     ) -> Job {
+        Self::start_when_idle(rt, ctx, install, assets, name, None)
+    }
+
+    pub fn start_when_idle(
+        rt: &tokio::runtime::Handle,
+        ctx: &egui::Context,
+        install: Install,
+        assets: Vec<(String, String)>,
+        name: String,
+        idle: Option<Arc<IdleGate>>,
+    ) -> Job {
         let progress = Arc::new(Progress::default());
         let slot = Arc::new(Mutex::new(None));
         let installing = Arc::new(AtomicBool::new(false));
+        let waiting_for_idle = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
         let (p, out, busy, canc, ctx) = (
             progress.clone(),
@@ -95,6 +145,7 @@ impl Job {
         // Repaint while it runs, for the progress bar.
         let ticker = ctx.clone();
         let net = crate::settings::own_net();
+        let waiting = waiting_for_idle.clone();
         let task = rt.spawn(async move {
             let fetched = match folder() {
                 Some(dir) => mdm_tools::update::fetch(&assets, &name, &dir, &net, &p)
@@ -104,6 +155,13 @@ impl Job {
             };
             let res = match fetched {
                 Ok(file) => {
+                    if let Some(idle) = idle {
+                        waiting.store(true, Ordering::Release);
+                        while !idle.ready() {
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                        }
+                        waiting.store(false, Ordering::Release);
+                    }
                     busy.store(true, Ordering::Release);
                     ctx.request_repaint();
                     tokio::task::spawn_blocking(move || apply(install, &file, &canc))
@@ -121,6 +179,7 @@ impl Job {
             progress,
             slot,
             installing,
+            waiting_for_idle,
             cancelled,
             task,
         }
@@ -134,6 +193,10 @@ impl Job {
     /// The file is downloaded and being put in place.
     pub fn installing(&self) -> bool {
         self.installing.load(Ordering::Acquire)
+    }
+
+    pub fn waiting_for_idle(&self) -> bool {
+        self.waiting_for_idle.load(Ordering::Acquire)
     }
 }
 
@@ -309,6 +372,21 @@ mod tests {
     const X64: Option<Arch> = Some(Arch::X64);
 
     #[test]
+    fn automatic_install_requires_continuous_idle_time() {
+        let gate = IdleGate::default();
+        assert!(!gate.ready());
+        gate.set_idle(true);
+        assert!(!gate.ready());
+        *gate.0.lock().unwrap() = Some(Instant::now() - Duration::from_secs(31));
+        gate.set_idle(true);
+        assert!(gate.ready());
+        gate.set_idle(false);
+        assert!(!gate.ready());
+        gate.set_idle(true);
+        assert!(!gate.ready(), "new activity restarts the quiet period");
+    }
+
+    #[test]
     fn only_a_signed_release_with_this_copys_file_updates_it() {
         let a = |names: &[&str]| -> Vec<(String, String)> {
             names
@@ -439,6 +517,7 @@ mod tests {
             progress: Arc::new(Progress::default()),
             slot: Arc::new(Mutex::new(None)),
             installing: Arc::new(AtomicBool::new(false)),
+            waiting_for_idle: Arc::new(AtomicBool::new(false)),
             cancelled: cancelled.clone(),
             task: rt.spawn(async {}),
         };

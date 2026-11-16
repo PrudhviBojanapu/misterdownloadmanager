@@ -1,0 +1,236 @@
+# Windows x64, English, Microsoft Edge only. Manual runs keep artifacts; tags publish.
+name: Windows release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  windows:
+    if: github.repository == 'PrudhviBojanapu/misterdownloadmanager'
+    name: windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        id: rust
+        run: |
+          rustup show active-toolchain
+          if ($LASTEXITCODE) {
+            rustup toolchain install
+            if ($LASTEXITCODE) { throw "Rust toolchain installation failed" }
+          }
+          rustup target add x86_64-pc-windows-msvc
+          if ($LASTEXITCODE) { throw "Rust target installation failed" }
+          "version=$(rustc --version)" >> $env:GITHUB_OUTPUT
+
+      # Cache dependencies and compiler outputs, never dist, symbols, tests or incremental data.
+      # A commit-specific key permits saving new outputs after a lockfile-prefix restore.
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: cargo-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release/build
+            target/release/deps
+            target/release/.fingerprint
+            target/x86_64-pc-windows-msvc/release/build
+            target/x86_64-pc-windows-msvc/release/deps
+            target/x86_64-pc-windows-msvc/release/.fingerprint
+          key: windows-x64-release-v2-${{ steps.rust.outputs.version }}-${{ hashFiles('.cargo/config.toml') }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            windows-x64-release-v2-${{ steps.rust.outputs.version }}-${{ hashFiles('.cargo/config.toml') }}-${{ hashFiles('Cargo.lock') }}-
+            windows-x64-release-v2-${{ steps.rust.outputs.version }}-${{ hashFiles('.cargo/config.toml') }}-
+            windows-x64-release-v2-${{ steps.rust.outputs.version }}-
+
+      - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $v = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME but Cargo.toml says $v" }
+
+      - name: Build prerequisites
+        run: |
+          choco install nasm --version 2.16.3 --no-progress -y
+          if ($LASTEXITCODE) { throw "NASM installation failed" }
+          "C:\Program Files\NASM" >> $env:GITHUB_PATH
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE) { throw "Inno Setup installation failed" }
+          }
+
+      - name: Code-signing certificate
+        id: cert
+        env:
+          PFX: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          PASSWORD: ${{ secrets.CODESIGN_PASSWORD }}
+        run: |
+          if (-not $env:PFX) { "No certificate: building without Authenticode."; exit 0 }
+          New-Item -ItemType Directory -Force target\signing | Out-Null
+          $pfx = Join-Path $PWD "target\signing\codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe is unavailable" }
+          $password = ConvertTo-SecureString -String $env:PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item -LiteralPath $pfx -Force
+          "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
+          "command=`"$($signtool.FullName)`" sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /sha1 $($cert.Thumbprint) /s My `$f" >> $env:GITHUB_OUTPUT
+
+      - name: Setup, portable and Edge extension
+        env:
+          MDM_SIGN_COMMAND: ${{ steps.cert.outputs.command }}
+        run: |
+          if (Test-Path target\dist) { Remove-Item -LiteralPath target\dist -Recurse -Force }
+          & .\tools\installer\build.ps1 -Arch x64
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Validate release packages
+        run: |
+          node tools\extension\check-pack.mjs
+          if ($LASTEXITCODE) { throw "Edge extension package is invalid" }
+          python tools\installer\check-pack.py target\dist
+          if ($LASTEXITCODE) { throw "Windows release packages are invalid" }
+
+      - name: Source correspondence and checksums
+        run: |
+          @(
+            "Repository: https://github.com/$env:GITHUB_REPOSITORY"
+            "Commit: $env:GITHUB_SHA"
+            "Source: https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
+            "Build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content -Encoding ascii target\dist\SOURCE.txt
+          Get-ChildItem target\dist -File | Where-Object Name -NotLike "SHA256SUMS*" |
+            Sort-Object Name | ForEach-Object {
+              "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+            } | Set-Content -Encoding ascii target\dist\SHA256SUMS.txt
+
+      - name: Sign checksums with the fork's pinned key
+        env:
+          MDM_RELEASE_KEY: ${{ secrets.MDM_RELEASE_KEY }}
+          MDM_RELEASE_KEY_PASSPHRASE: ${{ secrets.MDM_RELEASE_KEY_PASSPHRASE }}
+        run: |
+          if (-not $env:MDM_RELEASE_KEY) {
+            Write-Warning "MDM_RELEASE_KEY is not set. Checksums remain available, but automatic updates reject this unsigned release."
+            exit 0
+          }
+          New-Item -ItemType Directory -Force target\signing | Out-Null
+          # Git's MSYS GnuPG cannot create agent sockets under a drive-colon home path.
+          $env:GNUPGHOME = "target\signing\gnupg"
+          New-Item -ItemType Directory -Force $env:GNUPGHOME | Out-Null
+          $public = "crates\tools\keys\fork-release.asc"
+          gpg --batch --quiet --import $public
+          if ($LASTEXITCODE) { throw "Configure the fork's pinned public key before signing releases" }
+          $fingerprints = @(gpg --batch --with-colons --show-keys $public |
+            Where-Object { $_ -like "fpr:*" } | ForEach-Object { ($_ -split ":")[9] })
+          if ($LASTEXITCODE -or -not $fingerprints.Count) { throw "The pinned public key is invalid" }
+          $key = Join-Path $PWD "target\signing\release.asc"
+          Set-Content -Encoding ascii $key $env:MDM_RELEASE_KEY
+          try {
+            gpg --batch --quiet --import $key
+            if ($LASTEXITCODE) { throw "Importing the release private key failed" }
+          } finally { Remove-Item -LiteralPath $key -Force }
+          $passphrase = Join-Path $PWD "target\signing\passphrase"
+          [IO.File]::WriteAllText($passphrase, [string]$env:MDM_RELEASE_KEY_PASSPHRASE, [Text.UTF8Encoding]::new($false))
+          try {
+            gpg --batch --yes --pinentry-mode loopback --passphrase-file $passphrase `
+              --digest-algo SHA256 --detach-sign --local-user $fingerprints[0] `
+              --output target\dist\SHA256SUMS.txt.sig target\dist\SHA256SUMS.txt
+            if ($LASTEXITCODE) { throw "Signing with the pinned fork key failed" }
+          } finally { Remove-Item -LiteralPath $passphrase -Force }
+          gpg --batch --verify target\dist\SHA256SUMS.txt.sig target\dist\SHA256SUMS.txt
+          if ($LASTEXITCODE) { throw "The checksum signature does not verify" }
+
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release/build
+            target/release/deps
+            target/release/.fingerprint
+            target/x86_64-pc-windows-msvc/release/build
+            target/x86_64-pc-windows-msvc/release/deps
+            target/x86_64-pc-windows-msvc/release/.fingerprint
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-x64
+          path: target/dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          subject-path: target/dist/*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = $env:GITHUB_REF_NAME.TrimStart("v")
+          $log = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($log, "(?ms)^## \[$([regex]::Escape($v))\][^\n]*\n(.*?)(?=^## |\z)")
+          $notice = "Unofficial Windows x64 fork: English, Microsoft Edge only. " +
+            "The in-app updater targets this fork and requires a checksum signature by its pinned release key. " +
+            "Unsigned releases must be installed manually. Without Authenticode, Windows SmartScreen may show a warning.`n`n" +
+            "Source: https://github.com/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA`n`n"
+          if ($m.Success -and $m.Groups[1].Value.Trim()) {
+            $notes = $m.Groups[1].Value.Trim() -replace '\]\((?![a-z]+:|#)([^)\s]+)\)', "](https://github.com/$env:GITHUB_REPOSITORY/blob/$env:GITHUB_REF_NAME/`$1)"
+            Set-Content -Encoding utf8 target\release-notes.md ($notice + $notes)
+          } else {
+            Set-Content -Encoding utf8 target\release-notes.md $notice
+          }
+          $all = (Get-ChildItem target\dist -File).FullName
+          gh release create $env:GITHUB_REF_NAME --latest --verify-tag `
+            --title "Mister Download Manager $env:GITHUB_REF_NAME (Windows x64 fork)" `
+            --notes-file target\release-notes.md @all
+          if ($LASTEXITCODE) { throw "Release publication failed" }
+
+      - name: Remove signing material
+        if: always()
+        env:
+          THUMBPRINT: ${{ steps.cert.outputs.thumbprint }}
+        run: |
+          if (Test-Path target\signing\gnupg) {
+            $env:GNUPGHOME = "target\signing\gnupg"
+            gpgconf --kill gpg-agent
+            if ($LASTEXITCODE) { Write-Warning "Could not stop the isolated signing agent" }
+          }
+          if (Test-Path target\signing) { Remove-Item -LiteralPath target\signing -Recurse -Force }
+          if ($env:THUMBPRINT) { Remove-Item "Cert:\CurrentUser\My\$env:THUMBPRINT" -Force }

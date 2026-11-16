@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod archive_names;
 mod batch;
 mod categories;
 mod checksum;
@@ -8,8 +9,6 @@ mod chrome;
 mod clipbatch;
 mod clipboard;
 mod clock;
-mod cnl;
-mod countries;
 mod crash;
 mod crashui;
 mod debrid;
@@ -21,7 +20,7 @@ mod dialogs;
 mod droptarget;
 mod errors;
 mod extension;
-mod extractq;
+mod filecollision;
 mod fileicons;
 mod find;
 mod finish;
@@ -33,7 +32,6 @@ mod helpers;
 mod hotkey;
 mod i18n;
 mod icons;
-mod langpick;
 mod launch;
 mod linkparts;
 mod list;
@@ -48,15 +46,11 @@ mod playlistdlg;
 mod progress;
 mod properties;
 mod queue;
-mod quota;
 mod regional;
 mod remote;
 mod renderer;
 mod resumeread;
-mod rss;
-mod rssdlg;
 mod scale;
-mod scheduler;
 mod schemes;
 mod scrollbar;
 mod secrets;
@@ -78,7 +72,6 @@ mod update;
 mod videodlg;
 mod videolookup;
 mod videoplace;
-mod wake;
 mod webmark;
 mod whereis;
 #[cfg(windows)]
@@ -187,26 +180,6 @@ fn system_clipboard_text() -> clipboard::Read {
             clipboard::Read::Failed
         }
     }
-}
-
-/// A number that changes whenever the clipboard does, so the watch for copied links
-/// (clipboard.rs) reads it only then: Windows' sequence number. None where the system keeps none
-/// a program can ask for without opening the clipboard (Linux, macOS): read at each look.
-/// Off-screen test copies: when their `MDM_TEST_CLIPBOARD` file last changed (or never).
-pub fn clipboard_changes() -> Option<u64> {
-    if offscreen() {
-        let changed = std::env::var_os("MDM_TEST_CLIPBOARD")
-            .and_then(|f| std::fs::metadata(f).ok()?.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_nanos() as u64);
-        return Some(changed);
-    }
-    #[cfg(windows)]
-    return Some(u64::from(win32::clipboard_sequence()));
-    // Linux and macOS: no such number without the clipboard's own protocol (X11's XFixes,
-    // macOS's changeCount): the watch reads the text each time, off the window's thread.
-    #[cfg(not(windows))]
-    None
 }
 
 /// How long a read or write of the clipboard waits for the one under way in this process.

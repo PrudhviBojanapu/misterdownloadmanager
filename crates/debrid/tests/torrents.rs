@@ -192,7 +192,7 @@ async fn a_torrent_the_service_cant_get_fails_with_its_reason() {
 
 #[tokio::test]
 async fn file_names_that_climb_out_of_the_folder_are_refused() {
-    for service in [ServiceKind::RealDebrid, ServiceKind::AllDebrid] {
+    for service in [ServiceKind::TorBox] {
         let (_lab, d) = setup(service).await;
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("a").join("b");
@@ -213,7 +213,7 @@ async fn file_names_that_climb_out_of_the_folder_are_refused() {
 async fn a_stopped_torrent_continues_from_its_transfer() {
     // Stopped while the service works: started again with the transfer's id, nothing is sent
     // twice and the files come down.
-    let (lab, d) = setup(ServiceKind::RealDebrid).await;
+    let (lab, d) = setup(ServiceKind::TorBox).await;
     let dir = tempfile::tempdir().unwrap();
     let order = Order {
         account: 7,

@@ -16,6 +16,7 @@ permissions: read-all
 
 jobs:
   analysis:
+    if: github.repository == 'anefzaoui/misterdownloadmanager'
     runs-on: ubuntu-latest
     permissions:
       security-events: write # upload the result to the Security tab

@@ -165,10 +165,7 @@ pub struct Options {
     /// the download takes the next free numbered name. Off: a file there is never replaced.
     /// [`Destination::Dir`] ignores it (the server names that file).
     pub replace_existing: bool,
-    /// FTP data connections: passive (the client connects; IDM's "Use passive mode for FTP",
-    /// on by default), else active (the server connects back).
-    pub ftp_passive: bool,
-    /// Certificates (DER) trusted besides the system's for FTPS and HTTPS (tests' own CA).
+    /// Certificates (DER) trusted besides the system's for HTTPS (tests' own CA).
     pub extra_roots: Vec<Vec<u8>>,
     /// Send every request as POST with this body, the Content-Type coming from the headers (a
     /// browser form's download). Redirects go as in browsers: 301, 302 and 303 turn it into a
@@ -245,10 +242,25 @@ pub enum Proxy {
     Pac { script: Arc<str> },
 }
 
-/// Whether the engine can download `url`: http, https, ftp, ftps (implicit TLS) and ftpes
-/// (explicit TLS). Magnet links are the torrent engine's.
+/// Whether the engine can download `url`: HTTP and HTTPS only.
+/// Magnet links are the torrent engine's.
 pub fn supported(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https") || crate::ftp::is_ftp(url)
+    matches!(url.scheme(), "http" | "https")
+}
+
+/// Remove a URL's password before displaying or persisting it.
+pub fn without_password(url: &Url) -> Url {
+    let mut url = url.clone();
+    let _ = url.set_password(None);
+    url
+}
+
+fn require_supported(url: &Url) -> Result<(), Error> {
+    if supported(url) {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedScheme(url.scheme().to_owned()))
+    }
 }
 
 impl Default for Options {
@@ -279,7 +291,6 @@ impl Default for Options {
             ignore_mtime: false,
             server_time: false,
             replace_existing: false,
-            ftp_passive: true,
             extra_roots: Vec::new(),
             post: None,
             on_file_created: None,
@@ -351,6 +362,8 @@ pub struct Request {
 /// failure itself for an interface to word in its own language (`Snapshot::failure`).
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unsupported URL scheme {0}: only HTTP and HTTPS downloads are supported")]
+    UnsupportedScheme(String),
     #[error("{}", describe_http(.0))]
     Http(Arc<reqwest::Error>),
     #[error("server answered {0}")]
@@ -421,17 +434,14 @@ pub enum Error {
     /// The finished file doesn't have the expected hash; it stays as the part file.
     #[error("the file's {0} checksum doesn't match (the data is kept; redownload it)")]
     ChecksumMismatch(&'static str),
-    /// An FTP server's refusal: its reply code and text.
-    #[error("the FTP server answered {code} {text}")]
-    FtpReply { code: u32, text: String },
-    /// A network failure outside HTTP (FTP's sessions): `cause` as the system words it.
+    /// A network failure outside reqwest: `cause` as the system words it.
     #[error("{}", describe_net(*.kind, .cause))]
     Net { kind: NetKind, cause: String },
     /// A site's own refusal (Google Drive's quota page, its sign-in wall, a folder link, #34):
     /// retrying now won't help, the user has to do something else.
     #[error("{0}")]
     Refused(Refusal),
-    /// A secure connection (HTTPS, FTPS) on a system without trusted certificates to check
+    /// A secure connection (HTTPS) on a system without trusted certificates to check
     /// the server with (a minimal Linux without `ca-certificates`, #264).
     #[error("{}", crate::tls::NO_ROOTS)]
     NoCertificates,
@@ -460,8 +470,6 @@ impl Error {
             || matches!(self, Error::GotWebPage | Error::LinkExpired | Error::BotCheck)
             // A site's refusal; a service's, unless waiting helps (#44).
             || matches!(self, Error::Refused(r) if !matches!(r, Refusal::Service { fault, .. } if fault.retry_wait().is_some()))
-            // Login refused; no such file (or no permission); a name the server won't take.
-            || matches!(self, Error::FtpReply { code: 530 | 532 | 550 | 553, .. })
     }
 
     /// Errors that stop the whole download instead of being retried by a connection.
@@ -469,6 +477,7 @@ impl Error {
         matches!(
             self,
             Error::FileChanged
+                | Error::UnsupportedScheme(_)
                 | Error::NoRanges
                 | Error::BadState(_)
                 | Error::Io(_)
@@ -495,22 +504,18 @@ impl Error {
             Error::Status(s) => matches!(s.as_u16(), 500 | 502 | 504),
             Error::Http(h) => h.is_connect() || h.is_timeout() || h.is_request() || h.is_body(),
             Error::ShortBody => true,
-            // Too many sessions; no data connection; transfer aborted; file busy; local error.
-            Error::FtpReply { code, .. } => matches!(code, 421 | 425 | 426 | 450 | 451),
             Error::Net { kind, .. } => *kind != NetKind::Tls,
             Error::Refused(Refusal::Service { fault, .. }) => fault.retry_wait().is_some(),
             _ => false,
         }
     }
 
-    /// A server turning this connection away while others work: its connection limit. FTP
-    /// servers say it at login, with 421 or (vsftpd, ProFTPD) 530.
+    /// A server turning this connection away while others work: its connection limit.
     fn refused(&self) -> bool {
         match self {
             Error::Throttled(..) => true,
             Error::Status(s) => s.as_u16() == 403,
             Error::Http(h) => h.is_connect(),
-            Error::FtpReply { code, .. } => matches!(code, 421 | 530),
             Error::Net { kind, .. } => *kind == NetKind::Connect,
             _ => false,
         }
@@ -917,26 +922,13 @@ impl std::fmt::Debug for KeptAnswer {
 const KEEP_ANSWER_FOR: Duration = Duration::from_secs(15 * 60);
 
 /// `probe`, keeping its answer open when its body is the file from byte 0 (200, or 206 from
-/// 0), for `Download::start_with`. Not for FTP, whose look is a separate command.
+/// 0), for `Download::start_with`.
 pub async fn probe_kept(
     url: Url,
     headers: HeaderMap,
     opts: &Options,
 ) -> Result<(ProbeInfo, Option<KeptAnswer>), Error> {
-    if crate::ftp::is_ftp(&url) {
-        let site = crate::ftp::Site::new(&url, &headers, opts)?;
-        let facts = site.check().await?;
-        return Ok((
-            ProbeInfo {
-                file_name: naming::file_name(None, &url),
-                final_url: url,
-                size: facts.size,
-                server: None,
-                web_page: false,
-            },
-            None,
-        ));
-    }
+    require_supported(&url)?;
     let as_get = AsGet::default();
     // Through a service account (#44): its direct link is looked at instead, without the host's
     // cookies or logins.
@@ -1190,12 +1182,9 @@ impl Download {
         Download::spawn(req.url.clone(), move |shared, cancel| {
             let sh = shared.clone();
             let body = async move {
+                require_supported(&req.url)?;
                 after_clearing(req.dest.folder(), &cancel).await?;
-                if crate::ftp::is_ftp(&req.url) {
-                    run_fresh_ftp(req, opts, sh, cancel).await
-                } else {
-                    run_fresh(req, opts, sh, cancel, kept).await
-                }
+                run_fresh(req, opts, sh, cancel, kept).await
             };
             run(body, shared)
         })
@@ -1264,11 +1253,7 @@ impl Download {
                         if folder {
                             sh.view.lock().unwrap().downloaded = 0;
                         }
-                        if crate::ftp::is_ftp(&req.url) {
-                            run_fresh_ftp(req, opts, sh, cancel).await
-                        } else {
-                            run_fresh(req, opts, sh, cancel, kept).await
-                        }
+                        run_fresh(req, opts, sh, cancel, kept).await
                     }
                 }
             };
@@ -1569,17 +1554,14 @@ struct Ctx {
     /// The file is a kind whose bytes never start as a web page's ([`never_a_page`], #701): a
     /// whole answer that does is the site's page, whatever type it came as.
     never_page: bool,
-    /// An FTP download's server and its idle sessions (else HTTP through `client`).
-    ftp: Option<Arc<crate::ftp::Site>>,
     /// The browser-like connection every request goes through instead of `client`, when only it
     /// got past the site's bot check (#668).
     browser: Option<Arc<crate::browserlike::Browser>>,
 }
 
-/// An answer's body coming in: an HTTP response, or an FTP transfer.
+/// An HTTP answer's body coming in.
 pub(crate) enum Body {
     Http(Response),
-    Ftp(crate::ftp::Transfer),
     /// An answer to the browser-like connection (#668, `crate::browserlike`).
     #[cfg_attr(not(feature = "browser-connection"), allow(dead_code))]
     Browser(crate::browserlike::Stream),
@@ -1593,7 +1575,6 @@ impl Body {
     async fn chunk(&mut self) -> Result<Option<bytes::Bytes>, Error> {
         match self {
             Body::Http(r) => Ok(r.chunk().await?),
-            Body::Ftp(t) => t.chunk().await,
             Body::Browser(b) => b.chunk().await,
             Body::Prefixed(first, rest) => match first.take().filter(|b| !b.is_empty()) {
                 Some(b) => Ok(Some(b)),
@@ -1606,7 +1587,6 @@ impl Body {
     fn len(&self) -> Option<u64> {
         match self {
             Body::Http(r) => r.content_length(),
-            Body::Ftp(t) => t.expected(),
             Body::Browser(b) => b.len(),
             Body::Prefixed(_, rest) => rest.len(),
         }
@@ -1621,7 +1601,6 @@ impl Body {
                     let _ = r.chunk().await;
                 }
             }
-            Body::Ftp(t) => t.done(at_end).await,
             // Its connection isn't pooled for another request: there is only the one.
             Body::Browser(_) => {}
             Body::Prefixed(_, rest) => Box::pin(rest.done(at_end)).await,
@@ -1763,6 +1742,7 @@ fn client_with(
     seen: &Arc<crate::server::ServerSeen>,
     follow: bool,
 ) -> Result<Client, Error> {
+    require_supported(url)?;
     let port = url.port_or_known_default().unwrap_or(443);
     let route = &opts.route;
     // An IP address in the URL never reaches the resolver, which drops what the chosen adapter
@@ -1979,6 +1959,7 @@ async fn run_fresh(
     cancel: CancellationToken,
     kept: Option<KeptAnswer>,
 ) -> Result<Outcome, Error> {
+    require_supported(&req.url)?;
     let mut opts = opts;
     // The first request had to give up the browser's User-Agent (#372).
     let mut asked_as_mdm = false;
@@ -2247,7 +2228,6 @@ async fn run_fresh(
             as_get,
             web_page_ok: expects_web_page(&dest, content_type.as_deref()),
             never_page,
-            ftp: None,
             browser: browser.clone(),
         });
         match segmented(ctx, saved, Some(body)).await {
@@ -2401,107 +2381,6 @@ fn downloading(shared: &Shared, dest: &Path, size: Option<u64>, ranges: u8) {
         .or(size.is_none().then_some(false));
 }
 
-/// A new FTP download: as `run_fresh`, with the server's `SIZE` and `MDTM` for the answer's
-/// headers and `REST` for ranges.
-async fn run_fresh_ftp(
-    req: Request,
-    opts: Options,
-    shared: Arc<Shared>,
-    cancel: CancellationToken,
-) -> Result<Outcome, Error> {
-    shared.limiter.set(opts.speed_limit);
-    let (shared, cancel) = (&shared, &cancel);
-    let site = Arc::new(crate::ftp::Site::new(&req.url, &req.headers, &opts)?);
-    // Connection 0 asks about the file and receives it from byte 0 (the probe).
-    shared.conn(0, |_| {});
-    let ((facts, first), ttfb) = first_try(&opts, shared, cancel, || site.start()).await?;
-    let preempt_after = (ttfb * PREEMPT_TTFB).max(PREEMPT_MIN);
-    let size = facts.size;
-    shared.event(format!(
-        "Connected to {} ({}), size {}",
-        req.url.host_str().unwrap_or("?"),
-        match req.url.scheme() {
-            "ftp" => "FTP",
-            _ => "FTPS",
-        },
-        size.map_or("unknown".to_owned(), disk::human),
-    ));
-    let ranges = if facts.rest {
-        RANGES_YES
-    } else {
-        RANGES_UNKNOWN
-    };
-    // The modification time stands in for Last-Modified: resume checks it.
-    let validators = Validators {
-        last_modified: facts.modified.map(httpdate::fmt_http_date),
-        ..Validators::default()
-    };
-    let stamp = opts.server_time.then_some(facts.modified).flatten();
-    let (dest, _reservation, file) =
-        open_destination(&req.dest, size, &opts, || naming::file_name(None, &req.url)).await?;
-    downloading(shared, &dest, size, ranges);
-    let file = Arc::new(file);
-    let first = Body::Ftp(first);
-    let size = if let Some(size) = size {
-        let mut planner = Planner::new(size, opts.min_split);
-        planner.set_preempt_after(preempt_after);
-        *shared.planner.lock().unwrap() = Some(planner);
-        // No password on disk: whoever resumes gives the login again.
-        let url = crate::ftp::without_password(&req.url);
-        let mut saved = ResumeState::new(
-            url.clone(),
-            url.clone(),
-            dest.clone(),
-            size,
-            validators.clone(),
-        );
-        saved.checksum = opts.checksum.clone();
-        let ctx = Arc::new(Ctx {
-            // FTP's connections are its own (`ftp`): this client's are none of the server's.
-            client: client(&opts, &req.url, &AsGet::default(), &Default::default())?,
-            validators: Mutex::new(validators),
-            target: Mutex::new(Target {
-                url,
-                headers: HeaderMap::new(),
-                post: None,
-                generation: 0,
-            }),
-            origin: None,
-            refreshed: Default::default(),
-            size,
-            file: file.clone(),
-            opts: opts.clone(),
-            shared: shared.clone(),
-            cancel: cancel.child_token(),
-            ranges: AtomicU8::new(ranges),
-            // FTP's REST is asked for, not advertised.
-            advertised: true,
-            wait_for_ranges: false,
-            range_answered: Default::default(),
-            as_get: AsGet::default(),
-            web_page_ok: true,
-            never_page: false,
-            ftp: Some(site.clone()),
-            browser: None,
-        });
-        match segmented(ctx, saved, Some(first)).await {
-            Ok(()) => size,
-            // REST refused: the probe's data can't be kept; the whole file on one connection.
-            Err(Error::NoRanges) => {
-                *shared.planner.lock().unwrap() = None;
-                shared.view.lock().unwrap().resumable = Some(false);
-                let t = cancellable(cancel, site.open_at(0, Some(size))).await?;
-                single_stream(Body::Ftp(t), &file, shared, opts.global.as_deref(), cancel).await?
-            }
-            Err(e) => return Err(e),
-        }
-    } else {
-        single_stream(first, &file, shared, opts.global.as_deref(), cancel).await?
-    };
-    verify_part(shared, &dest, opts.checksum.as_ref()).await?;
-    finish(shared, file, &dest, size, stamp, replaces(&req.dest, &opts))
-}
-
 async fn run_resume(
     saved: ResumeState,
     state_file: PathBuf,
@@ -2510,6 +2389,8 @@ async fn run_resume(
     shared: Arc<Shared>,
     cancel: CancellationToken,
 ) -> Result<Outcome, Error> {
+    require_supported(&saved.url)?;
+    require_supported(&saved.final_url)?;
     let mut opts = opts;
     if saved.asked_as_mdm
         && let Some(agent) = opts.agent_fallback.take()
@@ -2591,28 +2472,6 @@ async fn run_resume(
     if file.metadata()?.len() != saved.size {
         return Err(bad("part file has the wrong size"));
     }
-    // FTP: the server's size and modification time must still be those of the data on disk.
-    let ftp = if crate::ftp::is_ftp(&url) {
-        let site = Arc::new(crate::ftp::Site::new(&url, &headers, &opts)?);
-        match cancellable(&cancel, site.check()).await {
-            Ok(facts) => {
-                let modified = facts.modified.map(httpdate::fmt_http_date);
-                let time_changed = !opts.ignore_mtime
-                    && modified.is_some()
-                    && saved.validators.last_modified.is_some()
-                    && modified != saved.validators.last_modified;
-                if time_changed || facts.size.is_some_and(|n| n != saved.size) {
-                    return Err(Error::FileChanged);
-                }
-            }
-            // Not answering now: the connections retry, and each checks its overlap.
-            Err(e) if e.transient() => {}
-            Err(e) => return Err(e),
-        }
-        Some(site)
-    } else {
-        None
-    };
     shared.event(format!(
         "Resuming: {} of {} on disk, from {}",
         disk::human(saved.downloaded()),
@@ -2652,7 +2511,7 @@ async fn run_resume(
         }),
         // A POST's ranges may never have been tried (it came on one connection): one
         // connection asks first, the others follow its 206.
-        wait_for_ranges: post.is_some() && ftp.is_none(),
+        wait_for_ranges: post.is_some(),
         target: Mutex::new(Target {
             url,
             headers,
@@ -2673,7 +2532,6 @@ async fn run_resume(
         as_get,
         web_page_ok,
         never_page,
-        ftp,
         browser,
     });
     let stamp = ctx
@@ -3239,6 +3097,7 @@ async fn get(
     expects: bool,
     cancel: &CancellationToken,
 ) -> Result<(Response, HeaderMap, Duration), Error> {
+    require_supported(&url)?;
     let (mut url, mut headers) = (url, headers);
     // A site's link is asked at its file's address (a Drive link: Drive's file host), the same
     // party, so the user's cookies go too. A form's POST goes where it was given.
@@ -3883,7 +3742,7 @@ fn range_value(from: u64, len: u64) -> HeaderValue {
 /// under `request_cap` (HTTP). None: the segment is no longer its own.
 fn request_end(ctx: &Ctx, id: WorkerId, from: u64) -> Option<u64> {
     let end = from + ctx.shared.with_planner(|p| p.room(id, from))?;
-    Some(match ctx.opts.cap().filter(|_| ctx.ftp.is_none()) {
+    Some(match ctx.opts.cap() {
         Some(cap) => end.min(from.saturating_add(cap)),
         None => end,
     })
@@ -3910,7 +3769,7 @@ async fn receive_all(
             Some(b) => b,
             None => {
                 // The bytes re-read to check the resume (`overlap`) count in the cap too.
-                if let Some(cap) = ctx.opts.cap().filter(|c| overlap < *c && ctx.ftp.is_none()) {
+                if let Some(cap) = ctx.opts.cap().filter(|c| overlap < *c) {
                     to = to.min(from - overlap + cap);
                 }
                 request(ctx, target, from - overlap, to).await?
@@ -3941,27 +3800,7 @@ enum Received {
 }
 
 /// `GET` bytes `[from, to)`; checks the server returned exactly that range of the same file.
-/// FTP: `REST from` and `RETR`.
 async fn request(ctx: &Ctx, target: &Target, from: u64, to: u64) -> Result<Body, Error> {
-    if let Some(site) = &ctx.ftp {
-        return match cancellable(&ctx.cancel, site.open_at(from, Some(ctx.size))).await {
-            Ok(t) => {
-                if from > 0 {
-                    ctx.learn_ranges(true);
-                }
-                Ok(Body::Ftp(t))
-            }
-            // REST refused ("not implemented", "syntax error") where it wasn't known to work.
-            Err(Error::FtpReply {
-                code: 500 | 501 | 502 | 504,
-                ..
-            }) if from > 0 && ctx.ranges.load(Ordering::SeqCst) != RANGES_YES => {
-                ctx.learn_ranges(false);
-                Err(Error::NoRanges)
-            }
-            Err(e) => Err(e),
-        };
-    }
     let if_range = ctx
         .validators
         .lock()
@@ -4743,7 +4582,7 @@ async fn receive(
                 note_best(ctx, &pace);
                 // A segment another connection shortened leaves an HTTP body far from its end
                 // (dropped); an FTP session is kept either way.
-                if err.is_none() && (out.pos >= to || matches!(body, Body::Ftp(_))) {
+                if err.is_none() && out.pos >= to {
                     // Not past a stop (`stop_connections` waits for this connection).
                     tokio::select! {
                         _ = ctx.cancel.cancelled() => {}

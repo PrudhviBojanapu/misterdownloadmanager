@@ -116,7 +116,10 @@ pub fn windows_now() -> System {
 pub fn theme(sys: &System) -> Theme {
     if let Some([bg, text, selection, _selection_text, link, _greyed]) = sys.high_contrast {
         // Windows' own high-contrast colours, the same in both modes (Windows has one set).
-        let mut t = crate::palette::builtins()[1].clone();
+        let mut t = crate::themefile::builtin(
+            "high-contrast",
+            include_str!("../assets/themes/high-contrast.toml"),
+        );
         let mut p = crate::derive::derive(&crate::derive::Seeds {
             background: bg,
             surface: bg,
@@ -136,7 +139,10 @@ pub fn theme(sys: &System) -> Theme {
         return t;
     }
     if sys.more_contrast {
-        let mut t = crate::palette::builtins()[1].clone();
+        let mut t = crate::themefile::builtin(
+            "high-contrast",
+            include_str!("../assets/themes/high-contrast.toml"),
+        );
         t.id = "native".into();
         t.name = "Native".into();
         return t;

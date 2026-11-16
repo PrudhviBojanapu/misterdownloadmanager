@@ -21,6 +21,19 @@ use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 
+/// Interpret local time using the system's zone rules, on the clock worker.
+fn to_utc(local: NaiveDateTime) -> Option<DateTime<Utc>> {
+    chrono::Local
+        .from_local_datetime(&local)
+        .earliest()
+        .or_else(|| {
+            chrono::Local
+                .from_local_datetime(&(local + chrono::Duration::hours(1)))
+                .earliest()
+        })
+        .map(|t| t.with_timezone(&Utc))
+}
+
 /// No answer yet (the minute of the last answer otherwise).
 const NONE: i64 = i64::MIN;
 /// The exact conversions kept at most (a few queues' next starts).
@@ -161,7 +174,7 @@ fn system_offset(utc: DateTime<Utc>) -> FixedOffset {
 
 fn clock() -> &'static Clock {
     static CLOCK: OnceLock<Clock> = OnceLock::new();
-    CLOCK.get_or_init(|| Clock::spawn(Box::new(system_offset), Box::new(crate::wake::to_utc)))
+    CLOCK.get_or_init(|| Clock::spawn(Box::new(system_offset), Box::new(to_utc)))
 }
 
 /// Starts the clock's thread, so its first answer is there by the first frame.
@@ -254,7 +267,7 @@ mod tests {
 
     #[test]
     fn its_time_is_chronos() {
-        let c = Clock::spawn(Box::new(system_offset), Box::new(crate::wake::to_utc));
+        let c = Clock::spawn(Box::new(system_offset), Box::new(to_utc));
         assert!(until(Duration::from_secs(10), || c.known().then_some(())).is_some());
         let (ours, theirs) = (c.now(), chrono::Local::now());
         assert_eq!(ours.offset(), theirs.offset());
@@ -271,7 +284,7 @@ mod tests {
                 .and_hms_opt(23, 0, 0)
                 .unwrap();
             let utc = until(Duration::from_secs(10), || c.exact_utc(local));
-            assert_eq!(utc, Some(crate::wake::to_utc(local)), "{local}");
+            assert_eq!(utc, Some(to_utc(local)), "{local}");
         }
     }
 

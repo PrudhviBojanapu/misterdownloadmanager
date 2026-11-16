@@ -16,17 +16,17 @@ Delete the `data` folder (or make it read-only) and the same copy behaves like t
 
 ## Set it up
 
-1. Download `MisterDownloadManager-<version>-portable.zip` from [Releases](https://github.com/anefzaoui/misterdownloadmanager/releases).
+1. Download `MisterDownloadManager-<version>-portable.zip` from [this fork's releases](https://github.com/PrudhviBojanapu/misterdownloadmanager/releases).
 2. Unzip it where you want MDM to live, for example `E:\MDM` on a USB stick.
 3. Run `misterdownloadmanager.exe` from there.
 
-On the first start MDM asks for the language; see [Languages](languages.md).
+This fork uses English and the Metro theme; there is no first-start language picker.
 
 ## What is different
 
 - **Downloads still go to the computer's Downloads folder** unless you change it. To keep them with MDM, set each category's folder in **Options → Save to**. [Carry MDM on a USB stick](guide-usb-stick.md) shows how.
 - **Launch Mister Download Manager on startup** in **Options → General** is greyed: starting with Windows needs the registry.
-- **Browser integration needs the installer.** The browser finds MDM's helper through the registry, so a portable copy can't take downloads from the browser. Use **Add URL**, the clipboard or the drop target instead (see [Adding downloads](adding-downloads.md)).
+- **Microsoft Edge integration needs the installer.** Edge finds MDM's helper through the registry, so a portable copy can't take downloads from the browser. Use **Add URL** or the [CLI/API](command-line.md) instead. Clipboard-triggered automatic starts and the floating drop target are removed in this fork.
 - **Tasks → Torrent settings → Open magnet links and .torrent files with Mister Download Manager** does write to the registry, for your Windows account only. Leave it off to keep the portable copy registry-free.
 
 ## Moving between computers

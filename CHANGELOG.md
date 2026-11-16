@@ -5,6 +5,43 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.3]
+
+### Windows fork
+
+- Automatic app updates use this fork's GitHub releases and pinned release-signing key.
+  Installation waits until downloads, active queues and file moves/renames have been idle
+  for 30 seconds; active downloads are not interrupted by an automatic restart.
+- The bundled unpacked Edge extension detects a newer local version and reloads itself.
+  Extension files arrive with the verified app update, not as remotely loaded scripts.
+  Load `{app}\extension\chromium` once; a separately extracted extension ZIP is not linked
+  to the installed app and must be replaced manually.
+- English/Edge-only Windows x64 packaging, dark Metro with colorful icons, retained-feature
+  CLI/MCP automation, and the approved lean feature set.
+
+### Local Windows fixes
+
+- Native window dragging coalesces position-only notifications instead of repainting every
+  viewport at each mouse movement. Windows still moves the window immediately; the final
+  position reaches the UI when the drag ends. Download updates, resizing and DPI changes
+  continue normally.
+- Download progress windows have native resize borders and resize cursors. The title bar
+  follows the window width; status text, progress bars and connection details use the extra
+  width, and a taller window shows more connections. Smaller windows keep scrolling access
+  to the original controls.
+
+### Local download fixes
+
+- Interactive file downloads check the intended destination against both saved downloads
+  and disk files, even when a signed URL changes. The existing duplicate-download dialog,
+  rather than a separate popup, asks
+  whether to skip, use a numbered name, overwrite, or use/resume an unfinished download.
+  Running downloads cannot be overwritten. Resume keeps the existing segments and
+  validators and refreshes the address; missing or incompatible partial data disables it.
+  Overwrite discards partial data only after confirmation and preserves a completed file
+  until its replacement succeeds. Browser automatic starts use the same check; explicitly
+  silent command-line downloads retain their scripting behavior.
+
 ### Added
 
 - **MCP `stop_queue` tool:** AI assistants using the MCP server can now stop the main download queue via `stop_queue`, matching the existing `start_queue` tool. The app's automation API also defaults `action: "start_queue"` and `"stop_queue"` to the main queue when no queue name is specified.
